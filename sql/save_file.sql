@@ -1,0 +1,4 @@
+INSERT OVERWRITE DIRECTORY '/tmp/result/mumi_proj' ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+
+SELECT *
+FROM hdctemp.mumi_proj_bpall
