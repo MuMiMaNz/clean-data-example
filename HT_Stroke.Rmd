@@ -1,0 +1,1229 @@
+---
+title: "COX HT research"
+author: "Suppasit Srisaeng"
+date: "2023-10-31"
+output: html_document
+---
+
+```{r, cache=TRUE}
+library(survival)
+library(dplyr)
+library(survminer)
+library(tidyverse)
+library(fmsb)
+library(corrplot)
+library(epiDisplay)
+```
+
+```{r, cache=TRUE}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# Assuming the data is in a CSV file named "HDC_tte.csv"
+data <- read.csv("output/HDC_tte2.csv")
+```
+
+```{r}
+data
+```
+
+
+--------------------- Data Cleaning ----------------- : ) ----------------------
+
+```{r}
+unique(data$final_cat)
+unique(data$occupation_category)
+unique(data$education_category)
+```
+
+
+```{r, cache=TRUE}
+# Convert categorical variables to factors
+data$sex_category <- as.factor(data$sex_category)
+data$occupation_category <- as.factor(data$occupation_category)
+data$occupation_category <- factor(data$occupation_category, levels = c("Healthcare Workers", "Manual worker","Service worker", "Office worker", "Unemployed",  "Unknown"))
+data$education_category <- as.factor(data$education_category)
+data$education_category <- factor(data$education_category, levels = c("Higher Level", "Middle Level", "Lower Level", "Unknown"))
+data$insurance_group <- as.factor(data$insurance_group)
+data$insurance_group <- factor(data$insurance_group, levels = c(
+"Aid / Foreigners", "Social Security Fund", "Universal Coverage", "State Officer", "Private Insurance", "Self-Paid", "Unknown"))
+data$hospcode_category <- as.factor(data$hospcode_category)
+data$hospcode_category <- factor(data$hospcode_category, levels = c(
+"Subdistrict Health Promotion Hospital", "Community Health Center", "Community Hospital", "Saraburi Hospital", "Other"))
+data$smoke <- as.factor(data$smoke)
+data$alcohol <- as.factor(data$alcohol)
+
+colnames(data)[colnames(data) == 'total_years'] <- 'total_time'
+
+data$HT_grouped <- ifelse(data$final_cat == "Normal", "Normal", "HT")
+data$HT_grouped <- factor(data$HT_grouped, levels = c("Normal", "HT"))
+data$final_cat <- factor(data$final_cat, levels = c('Normal', 'Un Dx', 'Dx, No tx data', 'Un Tx', 'Uncontrol', 'Control'),
+                         labels = c('Normal', 'Undiagnosed', 'Diag, No treatment data', 'Untreated', 'Uncontrolled', 'Controlled'))
+
+data$final_cat <- relevel(data$final_cat, ref = "Normal")
+levels(data$final_cat)
+
+```
+
+```{r, cache=TRUE}
+levels(data$sex_category)
+```
+
+
+```{r, cache=TRUE}
+tabpct(data$final_cat, data$outcome, percent = 'row', decimal = 3)
+```
+
+
+```{r, cache=TRUE}
+data[data$outcome == 1,]
+```
+
+
+```{r, cache=TRUE}
+# Find the rows where stop_age <= start_age
+problematic_rows <- which(data$stop_age <= data$start_age)
+
+# Display these rows
+data[problematic_rows, ]
+```
+
+```{r, cache=TRUE}
+small_constant = 1/365 # one day
+data$start_age[problematic_rows] <- data$start_age[problematic_rows] - small_constant
+
+```
+
+```{r, cache=TRUE}
+# Find the rows where stop_age <= start_age
+problematic_rows <- which(data$stop_age <= data$start_age)
+
+# Display these rows
+data[problematic_rows, ]
+```
+
+```{r, cache=TRUE}
+problematic_data <- data[data$outcome == 1 & data$start_age >= data$stop_age, ]
+print(problematic_data)
+```
+
+
+```{r, cache=TRUE}
+# Sort the data by cid and start_age
+data <- data[order(data$cid, data$start_age), ]
+
+# Create a logical vector that marks where the 'start_age' is less than the previous 'stop_age' for the same 'cid'
+data$overlap <- c(FALSE, data$cid[-1] == head(data$cid, -1) & data$start_age[-1] < head(data$stop_age, -1))
+
+```
+
+```{r, cache=TRUE}
+data %>%
+  filter(overlap == TRUE)
+```
+
+
+
+
+```{r, cache=TRUE}
+#final_data$surv_time <- final_data$stop_age - final_data$start_age
+
+# # Assuming 'start_age' and 'stop_age' are in years and part of 'final_data'
+# final_data$start_age_months <- final_data$start_age * 12
+# final_data$stop_age_months <- final_data$stop_age * 12
+# # final_data$surv_time_months <- final_data$surv_time * 12
+# # final_data$total_time_months <- final_data$total_time * 12
+
+```
+
+```{r, cache=TRUE}
+
+# Remove 'First Visit Stroke' rows from the original dataframe
+# exclude_first_stroke <- subset(data, final_cat != 'First Visit Stroke')
+```
+
+```{r, cache=TRUE}
+# exclude_first_stroke[exclude_first_stroke$outcome == 1,]
+```
+
+
+```{r, cache=TRUE}
+table(data$outcome)
+```
+
+```{r, cache=TRUE}
+# Assuming 'exclude_first_stroke' is your DataFrame
+
+# Calculate the number of missing values for each variable used in the Cox model
+missing_counts <- sapply(data[, c("final_cat", "sex_category", "education_category", 
+                                                  "insurance_group", "hospcode_category", "smoke", 
+                                                  "alcohol", "waist_cm", "bmi", "sbp")], 
+                         function(x) sum(is.na(x)))
+
+# Print the counts of missing data
+print(missing_counts)
+
+# You can also check how many rows have any missing values in these columns
+rows_with_any_missing <- sum(complete.cases(data[, c("final_cat", "sex_category", 
+                                                                     "education_category", "insurance_group", 
+                                                                     "hospcode_category", "smoke", "alcohol", 
+                                                                     "waist_cm", "bmi", "sbp")]) == FALSE)
+
+# Print the count of rows with any missing values
+print(paste("Number of rows with any missing values: ", rows_with_any_missing))
+
+```
+
+```{r, cache=TRUE}
+Stop sign ٩(◕‿◕)۶
+```
+
+------------------------------ KM Curve ----------------------------------------
+
+```{r, cache=TRUE}
+surv_obj <- with(data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+
+# Fit the survival curve with stratification by 'final_cat'
+km_fit <- survfit(surv_obj ~ HT_grouped, data = data)
+km_fit
+```
+
+```{r, cache=TRUE}
+km_fit <- survfit(surv_obj ~ 1, data = data)
+km_fit
+# Plot the Kaplan-Meier curve
+ggsurvplot(km_fit,
+           data = data,
+           xlab = "Age",  # Label for the x-axis
+           ylab = "Survival Probability",  # Label for the y-axis
+           title = "Kaplan-Meier Survival Curve",  # Title of the plot
+           surv.median.line = "hv",  # Add a median survival line
+           risk.table = TRUE,  # Add a risk table below the plot
+           conf.int = TRUE,
+           #pval = TRUE,
+           )
+```
+
+```{r, cache=TRUE}
+# Fit the survival curve with stratification by 'final_cat'
+km_fit_cat <- survfit(surv_obj ~ HT_grouped, data = data)
+
+# Plot the Kaplan-Meier curve with stratification
+ggsurvplot(km_fit_cat,
+           data = data,
+           xlab = "Age",  # Label for the x-axis
+           ylab = "Survival Probability",  # Label for the y-axis
+           title = "Kaplan-Meier Survival Curve: Normal vs. HT",  # Title of the plot
+           surv.median.line = "hv",  # Add a median survival line
+           risk.table = TRUE,  # Add a risk table below the plot
+           fontsize = 3,
+           tables.height = 0.3,
+           palette = c("#76885B" ,"#D80032"),  # Color palette for the strata
+           # legend.labs = c('Normal', 'HT'),
+           conf.int = TRUE,
+           )
+
+```
+
+
+```{r, cache=TRUE}
+# Fit the survival curve with stratification by 'final_cat'
+km_fit_cat <- survfit(surv_obj ~ final_cat, data = data)
+
+# Plot the Kaplan-Meier curve with stratification
+ggsurvplot(km_fit_cat,
+           data = data,
+           xlab = "Age",  # Label for the x-axis
+           ylab = "Survival Probability",  # Label for the y-axis
+           title = "Kaplan-Meier Survival Curve by HT Status",  # Title of the plot
+           surv.median.line = "hv",  # Add a median survival line
+           risk.table = FALSE,  # Add a risk table below the plot
+           fontsize = 3,
+           tables.height = 0.5,
+           palette = c("#76885B" ,"#D80032", "#C21292", "#E55604", "#E9B824", "#39A7FF"),  # Color palette for the strata
+           # legend.labs = c('Normal', 'Un Dx', 'Dx, No tx data', 'Un Tx', 'Uncontrol', 'Control'),
+           conf.int = TRUE,
+           )
+
+```
+
+```{r, cache=TRUE}
+# Fit the survival curve with stratification by 'HT_grouped'
+km_fit_sex <- survfit(surv_obj ~ sex_category, data = data)
+
+# Plot the Kaplan-Meier curve with stratification
+ggsurvplot(km_fit_sex,
+                data = data,
+                xlab = "Age",  # Label for the x-axis
+                ylab = "Survival Probability",  # Label for the y-axis
+                title = "Kaplan-Meier Survival Curve by Sex",  # Title of the plot
+                surv.median.line = "hv",  # Add a median survival line
+                risk.table = FALSE,  # Add a risk table below the plot
+                fontsize = 3,  # Adjust font size as needed
+                tables.height = 0.3,
+                palette = "Dark",
+                conf.int = TRUE  # Show confidence intervals
+                ) 
+```
+
+```{r, cache=TRUE}
+# Fit the survival curve with stratification by 'HT_grouped'
+km_fit_occ <- survfit(surv_obj ~ education_category, data = data)
+
+# Plot the Kaplan-Meier curve with stratification
+ggsurvplot(km_fit_occ,
+                data = data,
+                xlab = "Age",  # Label for the x-axis
+                ylab = "Survival Probability",  # Label for the y-axis
+                title = "Kaplan-Meier Survival Curve by education",  # Title of the plot
+                surv.median.line = "hv",  # Add a median survival line
+                risk.table = FALSE,  # Add a risk table below the plot
+                fontsize = 3,  # Adjust font size as needed
+                tables.height = 0.3,
+                palette = "Dark",
+                conf.int = TRUE  # Show confidence intervals
+                ) 
+```
+
+```{r, cache=TRUE}
+# Fit the survival curve with stratification by 'HT_grouped'
+km_fit_occ <- survfit(surv_obj ~ occupation_category, data = data)
+
+# Plot the Kaplan-Meier curve with stratification
+ggsurvplot(km_fit_occ,
+                data = data,
+                xlab = "Age",  # Label for the x-axis
+                ylab = "Survival Probability",  # Label for the y-axis
+                title = "Kaplan-Meier Survival Curve by Occupation",  # Title of the plot
+                surv.median.line = "hv",  # Add a median survival line
+                risk.table = FALSE,  # Add a risk table below the plot
+                fontsize = 3,  # Adjust font size as needed
+                tables.height = 0.3,
+                palette = "Dark",
+                conf.int = TRUE  # Show confidence intervals
+                ) 
+```
+
+```{r, cache=TRUE}
+#survdiff(surv_obj_exclude ~ final_cat, data = exclude_first_stroke)
+```
+
+--------------------------- IRR --------------------------------
+
+```{r, cache=TRUE}
+variables_of_interest <- c("HT_grouped","final_cat", "sex_category", "occupation_category", 
+                           "education_category", "insurance_group", "hospcode_category",
+                           "smoke", "alcohol")
+```
+
+```{r, cache=TRUE}
+data$person_time <- with(data, stop_age - start_age)
+
+```
+
+
+```{r, cache=TRUE}
+calculate_irr_by_level <- function(data, variable) {
+  # Ensure the variable is a factor
+  data[[variable]] <- as.factor(data[[variable]])
+  
+  # Extract reference level (first level of the factor)
+  reference_level <- levels(data[[variable]])[1]
+  
+  # Calculate person-time and outcomes by category
+  summary_data <- aggregate(cbind(person_time, outcome) ~ get(variable), data = data, FUN = sum)
+  
+  # Initialize a list to store results
+  irr_results <- list()
+
+  # Calculate IRR for each level against the reference
+  for (level in levels(data[[variable]])) {
+    if (level != reference_level) {
+      print(level)
+      a <- summary_data$outcome[summary_data[[1]] == level]  # Outcome for current level
+      b <- summary_data$outcome[summary_data[[1]] == reference_level]  # Outcome for reference level
+      PT1 <- summary_data$person_time[summary_data[[1]] == level]  # Person-time for current level
+      PT0 <- summary_data$person_time[summary_data[[1]] == reference_level]  # Person-time for reference level
+      
+      # Calculate IRR using rateratio package
+      if (length(a) > 0 && length(b) > 0 && PT1 > 0 && PT0 > 0) {
+        irr_result <- rateratio(a = a, b = b, PT1 = PT1, PT0 = PT0, conf.level = 0.95)
+        irr_results[[level]] <- irr_result
+      } else {
+        irr_results[[level]] <- NA
+      }
+    }
+  }
+  
+  return(list(variable = variable, IRR = irr_results))
+}
+
+```
+
+
+```{r, cache=TRUE}
+# Calculate IRR for each variable and level
+irr_results_by_level <- lapply(variables_of_interest, function(var) {
+  calculate_irr_by_level(data, var)
+})
+
+
+# Display the results
+print(irr_results_by_level)
+```
+
+
+----------------------------- Uni Cox PH -------------------------------
+
+```{r, cache=TRUE}
+surv_obj <- with(data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+```
+
+
+```{r, cache=TRUE}
+cox_ht <- coxph(surv_obj ~ HT_grouped, data = data)
+summary(cox_ht)
+```
+
+
+```{r, cache=TRUE}
+cox_cat <- coxph(surv_obj ~ final_cat , data = data)
+summary(cox_cat)
+```
+
+```{r, cache=TRUE}
+cox_uni <- coxph(surv_obj ~ smoke , data = data)
+cox_uni
+#cox.zph(cox_model_exclude, transform = "rank") 
+# ^ Error in solve.default(imat, u) : system is computationally singular: reciprocal condition number = 5.18227e-21
+```
+
+```{r, cache=TRUE}
+cox_uni <- coxph(surv_obj ~ alcohol , data = data)
+cox_uni
+#cox.zph(cox_model_exclude, transform = "rank") 
+# ^ Error in solve.default(imat, u) : system is computationally singular: reciprocal condition number = 5.18227e-21
+```
+
+```{r, cache=TRUE}
+cox_uni <- coxph(surv_obj ~ waist_cm , data = data)
+cox_uni
+```
+
+```{r, cache=TRUE}
+cox_uni <- coxph(surv_obj ~ bmi , data = data)
+cox_uni
+```
+
+```{r, cache=TRUE}
+cox_uni <- coxph(surv_obj ~ sbp , data = data)
+cox_uni
+```
+
+```{r, cache=TRUE}
+cox_uni <- coxph(surv_obj ~ dbp , data = data)
+cox_uni
+```
+
+```{r, cache=TRUE}
+# # List of variables to perform univariate Cox regression
+# variables <- c("final_cat", "sex_category",  "occupation_category", 
+#                "education_category", "insurance_group", "hospcode_category", 
+#                "smoke", "alcohol", "waist_cm", "bmi", "sbp", "dbp")
+# 
+# # surv_obj_exclude <- with(exclude_first_stroke, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+# # Loop through each variable and perform univariate Cox regression
+# for (var in variables) {
+#   # Create the formula
+#   formula <- as.formula(paste('Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting") ~', var))
+#   # Fit the Cox model
+#   fit <- coxph(formula, data = exclude_first_stroke)
+#   # Print the summary
+#   print(summary(fit))
+#   cox.zph(fit, transform = "rank")
+# }
+```
+
+
+
+---------------------- Multi Cox PH --------------------------
+
+```{r, cache=TRUE}
+# predictors = c("HT_grouped","final_cat", "sex_category", "occupation_category", 
+#                            "education_category", "insurance_group", "hospcode_category",
+#                            "smoke", "alcohol", "waist_cm", "bmi", "sbp")
+# 
+# # Loop through predictors and fit univariate Cox models
+# for (predictor in predictors) {
+#     uni_cox_model <- coxph(Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting") ~ get(predictor), data = exclude_first_stroke)
+#     uni_cox_zph <- cox.zph(uni_cox_model, transform = "rank")
+#     print(predictor)
+#     print(summary(uni_cox_zph))
+#     plot(uni_cox_zph)
+# }
+
+# Error in solve.default(imat, u) : system is computationally singular: reciprocal condition number = 5.18227e-21
+```
+
+```{r, cache=TRUE}
+surv_obj <- with(data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+```
+
+
+```{r, cache=TRUE}
+
+cox_multi <- coxph(surv_obj ~ final_cat + sex_category + education_category + insurance_group + hospcode_category + smoke + alcohol + waist_cm + bmi + sbp , data = data)
+summary(cox_multi)
+
+```
+
+```{r, cache=TRUE}
+# cox.zph(cox_model_exclude_multi, transform = "rank")
+
+# Error in solve.default(imat, u) : system is computationally singular: reciprocal condition number = 3.99153e-22
+```
+
+```{r, cache=TRUE}
+# cluster (ID) in the model formula indicates that there are multiple observations (clusters) from the same subject and requests that robust standard errors be produced for the coefficient estimates. These robust standard errors are designed to account for the non-independence of observations from the same subject
+cox_multi_cluster <- coxph(surv_obj ~ final_cat + sex_category + education_category + insurance_group + hospcode_category + smoke + alcohol + waist_cm + bmi +sbp + cluster(cid), data = data)
+summary(cox_multi_cluster)
+```
+
+```{r, cache=TRUE}
+# cox.zph(cox_model_exclude_multi_cluster, transform = "rank")
+
+# Error in solve.default(imat, u) : system is computationally singular: reciprocal condition number = 3.99153e-22
+```
+
+----------- Standardizing -------------------
+
+```{r, cache=TRUE}
+# Standardizing continuous variables
+data$sc_waist_cm <- scale(data$waist_cm, center = FALSE)
+data$sc_bmi <- scale(data$bmi, center = FALSE)
+data$sc_sbp <- scale(data$sbp, center = FALSE)
+```
+
+```{r, cache=TRUE}
+surv_obj_sc <- with(data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+cox_multi_sc <- coxph(surv_obj_sc ~  final_cat + sex_category + education_category + insurance_group + hospcode_category +smoke +alcohol + sc_waist_cm + sc_bmi + sc_sbp + cluster(cid), data = data)
+summary(cox_multi_sc)
+```
+
+```{r, cache=TRUE}
+# cox.zph(cox_model_exclude_multi_sc, transform = "rank")
+# Error in solve.default(imat, u) : system is computationally singular: reciprocal condition number = 3.99153e-22
+```
+
+```{r, cache=TRUE}
+cph <- cox.zph(cox_multi_sc)
+cph
+```
+
+
+```{r, cache=TRUE}
+ggcoxzph(cph_scale)
+```
+
+
+```{r, cache=TRUE}
+plot(cph_scale, hr = TRUE)
+```
+
+```{r, cache=TRUE}
+plot(cph_scale,se=TRUE, resid= FALSE, hr = TRUE)
+```
+
+------------ Interact -----------------------
+
+```{r, cache=TRUE}
+surv_obj <- with(data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+```
+
+```{r, cache=TRUE}
+cox_multi_interact <- coxph(surv_obj ~ interaction(final_cat,stop_age) + interaction(sex_category,stop_age) + education_category + interaction(insurance_group,stop_age)  + smoke + alcohol + waist_cm + bmi:stop_age + sbp:stop_age + cluster(cid), data = data)
+cox_multi_interact 
+# Error: cannot allocate vector of size 188.1 Gb
+```
+
+
+```{r, cache=TRUE}
+cox_multi_interact_sc <- coxph(surv_obj ~ interaction(final_cat, stop_age) + interaction(sex_category,stop_age) + education_category + interaction(insurance_group,stop_age)  + smoke + alcohol + sc_bmi:stop_age + sc_sbp:stop_age + cluster(cid), data = data)
+cox_multi_interact_sc 
+# Error: cannot allocate vector of size 188.1 Gb
+```
+
+```{r, cache=TRUE}
+cox_multi_interact <- coxph(surv_obj_exclude ~ final_cat*stop_age + sex_category*stop_age + education_category + insurance_group*stop_age  + smoke + alcohol + bmi*stop_age + sbp*stop_age + cluster(cid), data = exclude_first_stroke)
+cox_multi_interact
+# Error in coxph.wtest(fit$var[nabeta, nabeta], temp, control$toler.chol) :
+# infinite argument in coxph.wtest
+```
+
+```{r, cache=TRUE}
+cox_multi_interact2 <- coxph(surv_obj_exclude ~ final_cat + sex_category*stop_age + education_category + insurance_group*stop_age + hospcode_category + smoke + alcohol + sc_bmi*stop_age + sc_sbp*stop_age + cluster(cid), data = exclude_first_stroke)
+cox_multi_interact2
+# infinite argument in coxph.wtest
+```
+
+```{r, cache=TRUE}
+cox_multi_interact <- coxph(surv_obj ~ final_cat*stop_age  + sex_category*stop_age + education_category + insurance_group*stop_age  + smoke + alcohol + bmi*stop_age + sbp*stop_age + cluster(cid), data = data)
+cox_multi_interact 
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_multi_interact)
+# Na outcome, maybe some factor levels have too few data
+```
+
+```{r, cache=TRUE}
+cox_multi_interact2 <- coxph(surv_obj_exclude ~ final_cat*stop_age + sex_category*stop_age + education_category + bmi*stop_age + sbp*stop_age + cluster(cid), data = data)
+cox_multi_interact2
+```
+
+```{r, cache=TRUE}
+cox_multi_reduce <- coxph(surv_obj_exclude ~ final_cat + sex_category*stop_age + education_category + insurance_group*stop_age  + smoke + alcohol + bmi*stop_age + sbp*stop_age + cluster(cid), data = data)
+cox_multi_reduce 
+```
+
+
+
+---------------------- Time transform -----------------
+
+```{r, cache=TRUE}
+
+cox_multi_tt <- coxph(surv_obj ~ final_cat + sex_category + education_category + insurance_group + hospcode_category + smoke + alcohol + waist_cm + bmi + sbp + tt(final_cat), data = data, tt = function(x, stop_age, ...) x * log(stop_age + 10))
+summary(cox_multi_tt)
+# Error in coxph(surv_obj ~ final_cat + sex_category + education_category +  : 
+#   data contains an infinite predictor
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_multi_reduce)
+```
+
+
+---------------------- Cutting age ---------------
+
+
+
+```{r, cache=TRUE}
+data$step_age1 <- cut(
+  data$stop_age,
+  breaks = c(-Inf, 45, 60, Inf),
+  labels = c("30-44", "45-59", ">=60"),
+  right = FALSE  # This ensures that the interval is closed on the left and open on the right
+)
+
+levels(data$step_age1)
+```
+
+
+```{r, cache=TRUE}
+data$final_cat_ag <- paste(data$final_cat, data$step_age1, sep=":")
+data$sex_cat_ag <- paste(data$sex_category, data$step_age1, sep=":")
+data$ins_cat_ag <- paste(data$insurance_group, data$step_age1, sep=":")
+```
+
+
+```{r, cache=TRUE}
+# diagnosis_order <- c("Normal", "Undiagnosed", "Diag, No treatment data", "Untreated", "Uncontrolled", "Controlled")
+# 
+# age_order <- c("30-44", "45-59", ">=60")
+# 
+# ordered_array <- outer(diagnosis_order, age_order, paste, sep=":")
+# 
+# ordered_vector <- as.vector(t(ordered_array))
+# 
+# print(ordered_vector)
+# 
+# data$final_cat_ag <- factor(data$final_cat_ag, levels = ordered_vector)
+# 
+# levels(data$final_cat_ag)
+```
+
+```{r, cache=TRUE}
+# sex_order <- c("Female", "Male")
+# 
+# age_order <- c("30-44", "45-59", ">=60")
+# 
+# ordered_array <- outer(sex_order, age_order, paste, sep=":")
+# 
+# ordered_vector <- as.vector(t(ordered_array))
+# 
+# data$sex_cat_ag <- factor(data$sex_cat_ag, levels = ordered_vector)
+# levels(data$sex_cat_ag)
+```
+
+```{r, cache=TRUE}
+# ins_order <- c("Aid / Foreigners", "Social Security Fund", "Universal Coverage", "State Officer", "Private Insurance", "Self-Paid", "Unknown")
+# 
+# age_order <- c("30-44", "45-59", ">=60")
+# 
+# ordered_array <- outer(ins_order, age_order, paste, sep=":")
+# 
+# ordered_vector <- as.vector(t(ordered_array))
+# 
+# data$ins_cat_ag <- factor(data$ins_cat_ag, levels = ordered_vector)
+# levels(data$ins_cat_ag)
+```
+
+------- cutting age 2 -----------
+
+```{r, cache=TRUE}
+data$step_age2 <- cut(
+  data$stop_age,
+  breaks = c(-Inf, 45, 60, 80, Inf),
+  labels = c("30-44", "45-59","60-79", ">=80"),
+  right = FALSE  # This ensures that the interval is closed on the left and open on the right
+)
+
+levels(data$step_age2)
+```
+
+
+---------- cutting age 3 ------------
+
+
+```{r, cache=TRUE}
+data$step_age3 <- cut(
+  data$stop_age,
+  breaks = c(-Inf, 45, 60, 75, Inf),
+  labels = c("30-44", "45-59","60-74", ">=75"),
+  right = FALSE  # This ensures that the interval is closed on the left and open on the right
+)
+
+levels(data$step_age3)
+```
+
+---------- cutting age 4 ------------
+
+
+```{r, cache=TRUE}
+data$step_age4 <- cut(
+  data$stop_age,
+  breaks = c(-Inf, 45, 60, 70, 85, Inf),
+  labels = c("30-44", "45-59","60-69", "70-84",">=85"),
+  right = FALSE  # This ensures that the interval is closed on the left and open on the right
+)
+
+data$step_age4 <- relevel(data$step_age4, ref="30-44")
+
+
+levels(data$step_age4)
+
+```
+
+
+------------- Step time --------------
+
+```{r, cache=TRUE}
+surv_obj <- with(data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+```
+
+
+```{r, cache=TRUE}
+cox_multi_step <- coxph(surv_obj ~  interaction(final_cat,strata(step_age1)) + cluster(cid), data = data)
+summary(cox_multi_step)
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_multi_step)
+```
+
+```{r, cache=TRUE}
+gc()
+```
+
+```{r, cache=TRUE}
+memory.limit()
+```
+
+
+```{r, cache=TRUE}
+cox_step1 <- coxph(surv_obj ~ interaction(final_cat, strata(step_age1)) + interaction(sex_category, strata(step_age1)) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age1) + sbp:strata(step_age1) + cluster(cid), data = data)
+summary(cox_step1)
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step1)
+# Error in solve.default(imat, u) : 
+#   system is computationally singular: reciprocal condition number = 5.93014e-19
+```
+
+```{r, cache=TRUE}
+cox_step2 <- coxph(surv_obj ~ interaction(final_cat, strata(step_age2)) + interaction(sex_category, strata(step_age2)) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age2) + sbp:strata(step_age2) + cluster(cid), data = data)
+summary(cox_step2)
+```
+
+
+```{r, cache=TRUE}
+cox.zph(cox_step2)
+# Error in solve.default(imat, u) : 
+#   system is computationally singular: reciprocal condition number = 1.38008e-18
+```
+
+
+```{r, cache=TRUE}
+cox_step3_uni <- coxph(surv_obj ~ interaction(final_cat, strata(step_age3)) + cluster(cid), data = data)
+summary(cox_step3_uni)
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step3_uni)
+# Error in solve.default(imat, u) : 
+  # system is computationally singular: reciprocal condition number = 4.21046e-17
+```
+
+```{r, cache = TRUE}
+cox_step3_uni <- coxph(surv_obj ~ interaction(sex_category, strata(step_age3)) + cluster(cid), data = data)
+summary(cox_step3_uni)
+```
+
+```{r, cache=TRUE}
+cox_step3 <- coxph(surv_obj ~ interaction(final_cat, strata(step_age3)) +  interaction(sex_category,strata(step_age3)) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age3) + sbp:strata(step_age3) + cluster(cid), data = data)
+summary(cox_step3)
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step3)
+# Error in solve.default(imat, u) : 
+#   system is computationally singular: reciprocal condition number = 1.51845e-18
+```
+
+
+```{r, cache=TRUE}
+cox_step3_2 <- coxph(surv_obj ~  interaction(sex_category,strata(step_age3)) + education_category + interaction(insurance_group, strata(step_age3)) + smoke + alcohol + waist_cm + bmi:strata(step_age3) + sbp:strata(step_age3) + cluster(cid), data = data)
+
+summary(cox_step3_2)
+```
+
+
+```{r, cache=TRUE}
+cox.zph(cox_step3_2)
+# Error in solve.default(imat, u) : 
+#  system is computationally singular: reciprocal condition number = 1.97491e-18
+```
+
+```{r, cache=TRUE}
+cox_step3_3 <- coxph(surv_obj ~ interaction(HT_grouped,strata(step_age3)) + interaction(sex_category,strata(step_age3)) + education_category + interaction(insurance_group, strata(step_age3)) + smoke + alcohol + waist_cm + bmi:strata(step_age3) + sbp:strata(step_age3) + cluster(cid), data = data)
+summary(cox_step3_3)
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step3_3)
+# Error in solve.default(imat, u) : 
+#   system is computationally singular: reciprocal condition number = 2.07901e-18
+```
+
+```{r, cache=TRUE}
+cox_step4 <- coxph(surv_obj ~ step_age4 + final_cat:step_age4 +  sex_category:step_age4 + education_category + smoke + alcohol + waist_cm + bmi:step_age4 + sbp:step_age4 + cluster(cid) , data = data)
+summary(cox_step4)
+
+```
+
+
+
+```{r, cache=TRUE}
+cox.zph(cox_step4)
+# Error in solve.default(imat, u) : 
+#   system is computationally singular: reciprocal condition number = 3.28799e-20
+
+```
+
+```{r}
+cox.zph(cox_step4, transform = log, singledf= TRUE)
+# Error in solve.default(imat, u) : 
+#   system is computationally singular: reciprocal condition number = 3.28799e-20
+```
+
+
+----------------- Drop low level factor ----------------
+
+```{r, cache=TRUE}
+drop_data <- data
+
+# Recode the specific levels to NA
+drop_data$sex_category[drop_data$sex_category == "Unknown"] <- NA
+# drop_data$smoke[drop_data$smoke == 3] <- NA
+# drop_data$alcohol[drop_data$alcohol == 3] <- NA
+
+
+# Drop the levels that are now unused
+drop_data$sex_category <- droplevels(drop_data$sex_category)
+# drop_data$smoke <- droplevels(drop_data$smoke)
+# drop_data$alcohol <- droplevels(drop_data$alcohol)
+
+# Remove rows where sex_category is NA
+drop_data <- drop_data[!is.na(drop_data$sex_category), ]
+
+```
+
+```{r, cache=TRUE}
+levels(drop_data$smoke)
+levels(drop_data$sex_category)
+levels(drop_data$alcohol)
+```
+
+
+```{r, cache=TRUE}
+surv_drop <- with(drop_data, Surv(time = start_age, time2 = stop_age, event = outcome, type = "counting"))
+```
+
+```{r, cache=TRUE}
+table(interaction(drop_data$final_cat, strata(drop_data$step_age4)), drop_data$outcome)
+```
+
+```{r, cache=TRUE}
+table(drop_data$final_cat_ag4, drop_data$outcome)
+```
+
+
+
+---------- Step time 1 --------------
+
+```{r, cache = TRUE}
+cox_multi_drop <- coxph(surv_drop ~ final_cat:strata(step_age1) + sex_category:strata(step_age1) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age1) + sbp:strata(step_age1) + cluster(cid), data = drop_data)
+summary(cox_multi_drop)
+
+```
+
+```{r, cache = TRUE}
+cox.zph(cox_multi_drop)
+```
+
+```{r, cache = TRUE}
+cox_multi_drop2 <- coxph(surv_drop ~ interaction(sex_category,strata(step_age1)) + education_category + interaction(insurance_group, strata(step_age1)) + hospcode_category + smoke + alcohol + waist_cm + interaction(bmi, strata(step_age1)) + interaction(sbp,strata(step_age1)) + cluster(cid), data = drop_data)
+summary(cox_multi_drop2)
+
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_multi_drop2)
+```
+
+```{r, cache=TRUE}
+cox_multi_drop <- coxph(surv_drop ~ interaction(final_cat, strata(step_age1)) + sex_category:strata(step_age1) + education_category + insurance_group + hospcode_category + smoke +alcohol + waist_cm + bmi:strata(step_age1) + sbp:strata(step_age1) + cluster(cid), data = drop_data)
+summary(cox_multi_drop)
+
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_multi_drop)
+```
+
+```{r, cache=TRUE}
+cox_multi_drop2 <- coxph(surv_drop ~ interaction(final_cat, strata(step_age1)) +  interaction(sex_category,strata(step_age1)) + education_category + interaction(insurance_group, strata(step_age1)) + smoke +alcohol + waist_cm + bmi:strata(step_age1) + sbp:strata(step_age1) + cluster(cid), data = drop_data)
+summary(cox_multi_drop2)
+
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_multi_drop2)
+
+```
+
+```{r, cache=TRUE}
+zph_drop_ag
+```
+
+
+```{r, cache=TRUE}
+plot(zph_drop_ag, resid = FALSE, hr = TRUE)
+
+```
+
+
+```{r, cache=TRUE}
+cox_drop_ag2 <- coxph(surv_drop ~ final_cat_ag + sex_category:strata(step_age1) + education_category + ins_cat_ag + hospcode_category + smoke +alcohol + waist_cm + bmi:strata(step_age1) + sbp:strata(step_age1) + cluster(cid), data = drop_data)
+summary(cox_drop_ag2)
+```
+
+```{r, cache=TRUE}
+zph_drop_ag2 <- cox.zph(cox_drop_ag2)
+zph_drop_ag2
+```
+
+
+
+```{r, cache=TRUE}
+plot(zph_drop_ag2,se=TRUE, resid= FALSE, hr = TRUE)
+```
+
+
+------------ Step time 2 ----------
+
+```{r, cache=TRUE}
+cox_step2_drop <- coxph(surv_drop ~ interaction(final_cat, strata(step_age2)) +  interaction(sex_category,strata(step_age2)) + education_category +  smoke + alcohol + waist_cm + bmi:strata(step_age2) + sbp:strata(step_age2) + cluster(cid), data = drop_data)
+summary(cox_step2_drop)
+```
+
+```{r, cache=TRUE}
+zph_drop_step2 <- cox.zph(cox_step2_drop)
+zph_drop_step2
+```
+
+------------ Step time 3 ----------
+
+```{r, cache=TRUE}
+cox_step3_sex <- coxph(surv_drop ~ interaction(sex_category,strata(step_age3)) + cluster(cid), data = drop_data)
+summary(cox_step3_sex)
+```
+
+```{r, cache=TRUE}
+cox_step3_drop <- coxph(surv_drop ~ interaction(final_cat, strata(step_age3)) + interaction(sex_category,strata(step_age3)) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age3) + sbp:strata(step_age3) + cluster(cid), data = drop_data)
+summary(cox_step3_drop)
+```
+
+```{r, cache=TRUE}
+zph_drop_step3 <- cox.zph(cox_step3_drop)
+zph_drop_step3
+```
+
+```{r, cache=TRUE}
+cox_step3_drop2 <- coxph(surv_drop ~ interaction(HT_grouped, strata(step_age3)) +  interaction(sex_category,strata(step_age3)) + education_category + interaction(insurance_group, strata(step_age3)) + smoke +alcohol + waist_cm + bmi:strata(step_age3) + sbp:strata(step_age3) + cluster(cid), data = drop_data)
+summary(cox_step3_drop2)
+
+```
+
+
+```{r, cache=TRUE}
+zph_step3_drop2 <- cox.zph(cox_step3_drop2)
+zph_step3_drop2
+```
+
+
+```{r, cache=TRUE}
+cox_step3_drop2 <- coxph(surv_drop ~  interaction(sex_category,strata(step_age3)) + education_category + interaction(insurance_group, strata(step_age3)) + smoke +alcohol + waist_cm + bmi:strata(step_age3) + sbp:strata(step_age3) + cluster(cid), data = drop_data)
+summary(cox_step3_drop2)
+
+```
+
+```{r, cache=TRUE}
+zph_step3_drop2 <- cox.zph(cox_step3_drop2)
+zph_step3_drop2
+```
+
+```{r, cache=TRUE}
+ggcoxzph(zph_step3_drop2, resid = FALSE, se = FALSE,  var = "interaction(final_cat, strata(step_age3))")
+# ggcoxzph(zph_step3_drop2, resid = FALSE,  var = "final_cat")
+```
+
+------------ Step time 4 ----------
+
+```{r, cache=TRUE}
+cox_step4_drop <- coxph(surv_drop ~ step_age4 + interaction(final_cat, strata(step_age4)) +  interaction(sex_category,strata(step_age4)) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age4) + sbp:strata(step_age4) + cluster(cid), data = drop_data)
+summary(cox_step4_drop)
+```
+
+
+```{r}
+cox.zph(cox_step4_drop)
+```
+
+
+```{r, cache=TRUE}
+cox_step4_drop2 <- coxph(surv_drop ~ final_cat:strata(step_age4) +  sex_category:strata(step_age4) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age4) + sbp:strata(step_age4) + cluster(cid), data = drop_data)
+summary(cox_step4_drop2)
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step4_drop2)
+```
+
+```{r, cache=TRUE}
+cox_step4_drop3 <- coxph(surv_drop ~ interaction(final_cat, strata(step_age4)) +  interaction(sex_category,strata(step_age4)) + education_category +  smoke + alcohol + waist_cm + interaction(bmi, strata(step_age4)) + interaction(sbp, strata(step_age4)) + cluster(cid), data = drop_data)
+summary(cox_step4_drop3)
+# Error: cannot allocate vector of size 108685.4 Gb
+```
+
+```{r, cache=TRUE}
+cox_step4_drop4 <- coxph(surv_drop ~ cluster(cid) + step_age4 + final_cat:strata(step_age4) +  sex_category:strata(step_age4) + education_category + smoke + alcohol + waist_cm + bmi:strata(step_age4) + sbp:strata(step_age4) , data = drop_data)
+summary(cox_step4_drop4)
+
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step4_drop4)
+
+```
+
+```{r, cache=TRUE}
+cox_step4_drop5 <- coxph(surv_drop ~ cluster(cid) + final_cat:step_age4 +  sex_category:step_age4 + education_category + smoke + alcohol + waist_cm + bmi:step_age4 + sbp:step_age4 , data = drop_data)
+summary(cox_step4_drop5)
+
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step4_drop5)
+
+```
+
+```{r, cache=TRUE}
+cox_step4_drop6 <- coxph(surv_drop ~ step_age4 + final_cat:step_age4 +  sex_category:step_age4 + education_category + smoke + alcohol + waist_cm + bmi:step_age4 + sbp:step_age4 + cluster(cid) , data = drop_data)
+summary(cox_step4_drop6)
+
+```
+
+```{r, cache=TRUE}
+cox.zph(cox_step4_drop6)
+```
+
+```{r, cache=TRUE}
+cox_step4_drop7 <- coxph(surv_drop ~ step_age4 + final_cat:step_age4 +  sex_category:step_age4 + smoke + alcohol + waist_cm + bmi:step_age4 + sbp:step_age4 + cluster(cid) , data = drop_data)
+summary(cox_step4_drop7)
+
+```
+
+
+```{r, cache=TRUE}
+cox.zph(cox_step4_drop7)
+```
+
+```{r}
+# Dynamically adjust the reference level for final_cat within each stratum of step_age4
+drop_data$final_cat_adjusted <- interaction(drop_data$final_cat, drop_data$step_age4, drop = TRUE)
+
+# Relevel the new interaction factor to make 'Normal' the reference within each stratum
+levels_to_relevel <- levels(drop_data$final_cat_adjusted)
+levels_to_relevel
+```
+
+
+```{r}
+
+drop_data$final_cat_adjusted <- factor(drop_data$final_cat_adjusted, levels = levels_to_relevel)
+levels(drop_data$final_cat_adjusted)
+```
+
+
+```{r}
+# Fit the Cox model using the adjusted factor
+cox_model_refit <- coxph(surv_drop ~ education_category + smoke + alcohol + 
+                         waist_cm + final_cat_adjusted + 
+                         strata(step_age4):sex_category + 
+                         strata(step_age4):bmi + strata(step_age4):sbp, 
+                         data = drop_data, cluster = cid)
+
+# Summary of the model
+summary(cox_model_refit)
+
+```
+
+```{r}
+cox.zph(cox_model_refit)
+```
+
+
+------------------
+
+```{r}
+## test the significance of the interaction effects (Wald test)
+library(car)
+
+linearHypothesis(
+  cox_step4_drop6,
+  c(
+    "step_age430-44:final_catUndiagnosed = 0",
+    "step_age445-59:final_catUndiagnosed = 0",
+    "step_age460-69:final_catUndiagnosed = 0",
+    "step_age470-84:final_catUndiagnosed = 0",
+    "step_age4>=85:final_catUndiagnosed = 0",
+    "step_age430-44:final_catDiag, No treatment data = 0",
+    "step_age445-59:final_catDiag, No treatment data = 0",
+    "step_age460-69:final_catDiag, No treatment data = 0",
+    "step_age470-84:final_catDiag, No treatment data = 0",
+    "step_age4>=85:final_catDiag, No treatment data = 0",
+    "step_age430-44:final_catUntreated = 0",
+    "step_age445-59:final_catUntreated = 0",
+    "step_age460-69:final_catUntreated = 0",
+    "step_age470-84:final_catUntreated = 0",
+    "step_age4>=85:final_catUntreated = 0",
+    "step_age430-44:final_catUncontrolled = 0",
+    "step_age445-59:final_catUncontrolled = 0",
+    "step_age460-69:final_catUncontrolled = 0",
+    "step_age470-84:final_catUncontrolled = 0",
+    "step_age4>=85:final_catUncontrolled = 0",
+    "step_age430-44:final_catControlled = 0",
+    "step_age445-59:final_catControlled = 0",
+    "step_age460-69:final_catControlled = 0",
+    "step_age470-84:final_catControlled = 0",
+    "step_age4>=85:final_catControlled = 0"
+  )
+)
+
+```
+
+
+----------------------------- Mulicolinearity --------------------------
+
+```{r, cache=TRUE}
+# Check correlations among predictors
+cor_matrix <- cor(subset(data, select = c( waist_cm, bmi, sbp, dbp)), use = "pairwise.complete.obs")
+print(cor_matrix)
+corrplot(cor_matrix, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+
+```{r, cache=TRUE}
+
+library(car)
+# Calculate Variance Inflation Factor (VIF): This is a measure often used to quantify the level of multicollinearity. A VIF value greater than 5 or 10 (different thresholds are used in practice) suggests high 
+model_vif <- vif(cox_model_multi)  # replace cox_model_exclude_multi with your model object
+model_vif
+
+```
+
+```{r, cache=TRUE}
+# Identify variables with a high VIF
+high_vif <- model_vif[model_vif > 5]
+print(high_vif)
+```
+
+
+```{r}
+library(usdm)
+df = survival::lung 
+vif(df[, -c(2, 3)])
+```
+
+
+---------------------- Baseline Hazard ---------------
+
+```{r, cache=TRUE}
+# Get the baseline cumulative hazard
+base_haz <- basehaz(fit_multi, centered = FALSE)
+
+# Plot the baseline cumulative hazard
+plot(base_haz$time, base_haz$haz, type = 'l', xlab = "Time", ylab = "Cumulative Hazard")
+
+```
+
+
+```{r, cache=TRUE}
+# Calculate the survival function
+surv_fit <- survfit(fit_multi)
+
+# Plot the survival function
+plot(surv_fit, xlab = "Time", ylab = "Survival Probability")
+
+```
+
+```{r, cache=TRUE}
+# Plot the hazard ratios
+plot(cox.zph(fit_multi))
+```
+
+```{r, cache=TRUE}
+# Create time-dependent covariate
+data$covariate_time_interaction <- data$time * data$covariate
+
+# Fit the Cox model
+cox_model <- coxph(Surv(time, status) ~ covariate + covariate_time_interaction, data = data)
+
+# Summary of the model to look at the coefficients
+summary(cox_model)
+
+# You can plot the effect of the covariate over time
+# Assuming 'covariate' is continuous
+plot(cox.zph(cox_model))
+```
+

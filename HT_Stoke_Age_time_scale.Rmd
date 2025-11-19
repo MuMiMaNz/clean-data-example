@@ -1,0 +1,56 @@
+---
+title: "HT Stroke"
+author: "Suppasit Srisaeng"
+date: "2023-05-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+```{r}
+# install.packages("ctv")
+```
+
+
+```{r}
+ctv::install.views("HighPerformanceComputing", coreOnly = TRUE)
+```
+
+
+```{r}
+library("survival")
+# library("Rmpi")
+```
+
+
+```{r}
+raw_data <- read.csv(file = './HDC data/TTE_stroke.csv', na.string = c("-","","#N/A","NA"))
+```
+
+```{r}
+str(raw_data)
+```
+
+
+```{r}
+raw_data$birth <- as.Date(raw_data$birth, format = "%Y-%m-%d")
+raw_data$date_serv <- as.Date(raw_data$date_serv, format = "%Y-%m-%d")
+
+str(raw_data)
+```
+
+```{r}
+raw_data$diff_dates = difftime(raw_data$birth,raw_data$date_serv, units = "days")
+```
+
+
+```{r}
+summary(raw_data)
+```
+
+```{r}
+raw_data
+```
+
