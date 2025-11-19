@@ -1,0 +1,5010 @@
+---
+title: "Diarrhea"
+author: "Suppasit Srisaeng"
+date: "2025-01-19"
+output:
+  # pdf_document: default
+  # word_document: default
+  # html_notebook
+  html_document:
+    self_contained: true   # bundles CSS/JS
+---
+
+```{r}
+# install.packages(c("purrr") )  # Install
+```
+
+```{r}
+options("scipen" = 10)
+```
+
+
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# Sys.setlocale("LC_ALL","English")
+Sys.setlocale(locale = "Thai")
+Sys.getlocale()
+# Load necessary libraries
+library(epiDisplay)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)  # For formatting numbers
+library(stringr)
+library(viridis)
+library(readr)
+library(purrr)
+library(zoo)
+library(knitr) # For creating formatted tables
+library(car)
+library(gtools)
+library(performance)
+library(rstatix)
+library(reshape2)
+library(corrplot)
+library(fixest)  # For DiD regression
+library(modelsummary)   # for neat tables
+library(MASS)
+```
+
+
+```{r}
+data_raw <- read.csv("data/Gastroenteritis_2014_2022_ALL_A09x_B15x.csv", encoding = "UTF-8")
+data_raw
+```
+
+```{r}
+# Combine proc1 to proc21 into a single column named "proc"
+data <- data_raw %>%
+  mutate(sec_dx = apply(dplyr::select(., starts_with("sdx")), 1, function(x) paste(na.omit(x), collapse = " ")))
+
+data
+```
+
+```{r}
+# Combine proc1 to proc21 into a single column named "proc"
+data <- data %>%
+  mutate(proc = apply(dplyr::select(., starts_with("proc")), 1, function(x) paste(na.omit(x), collapse = " ")))
+
+data
+```
+
+```{r}
+# Remove commas from data$proc
+data <- data %>%
+  mutate(proc = gsub(",", "", proc))
+
+data
+```
+
+```{r}
+# Identify as HN + HosCode
+data <- data %>%
+  mutate(hn = paste0(hn, hcode))
+```
+
+
+```{r}
+chos <- read.csv("chospital.csv", encoding = "UTF-8")
+chos
+```
+
+```{r}
+# Add the chos$hostype column to data based on matching hcode with hoscode
+data <- data %>%
+  left_join(chos %>% select(hoscode, hostype), by = c("hcode" = "hoscode"))
+
+data
+```
+
+```{r}
+col <- c("hn", "age_y", "age_m", "sex", "dateadm", "datedsc", "los",  
+                  "maininscl", "drg", "rw", "adjrw", "adm_w", "amount", 
+                 "hcode", "prov1", "rgn1", 
+                 "dx_gyear", "pdx", "pdx_dx", "sec_dx", "proc", 
+                  "discht", "hostype","dischs", "DEATH_DATE", "DCAUSE_OTH"
+         )
+
+setdiff(col, names(data))
+```
+
+```{r}
+data <- data[, col]
+data
+```
+
+```{r}
+data[100000,]
+```
+
+
+```{r}
+# Convert 'dateadm' and 'datedsc' to Date format
+data$dateadm <- as.Date(data$dateadm, format = "%Y-%m-%d")
+data$datedsc <- as.Date(data$datedsc, format = "%Y-%m-%d")
+
+data
+```
+
+
+```{r}
+Sys.setlocale("LC_ALL","English") # To see month in English
+
+# Extract year and month
+data <- data %>%
+  mutate(
+    dx_gyear = year(dateadm),
+    dx_gmonth = month(dateadm, label = TRUE, abbr = TRUE),  # Abbreviated month names
+    dx_gYearMonth = paste(dx_gyear, dx_gmonth, sep = "-")
+  )
+data
+```
+# Check ICD-10
+
+```{r}
+# Load the ICD-10 terms
+icd10_terms <- read.csv("ICD10TM-Public.csv")#, fileEncoding = "ISO-8859-1")
+# Rename columns for clarity if needed
+colnames(icd10_terms) <- c("ICD10", "Definition")
+
+# Add the missing definition for K522
+additional_definition <- data.frame(
+  ICD10 = "K522",
+  Definition = "Allergic and dietetic gastroenteritis and colitis due to cow’s milk protein"
+)
+
+# Append the additional definition to the ICD-10 terms
+icd10_terms <- bind_rows(icd10_terms, additional_definition)
+
+icd10_terms
+```
+
+
+```{r}
+target_prefixes <- c("B95", "B96", "B97", "K52", "A87")
+# Create a search pattern: "^B95|^B96|..." which means "starts with B95 OR starts with B96..."
+search_pattern <- paste0("^", target_prefixes, collapse = "|")
+
+# 2. Filter the data and create the frequency count
+frequency_table <- data %>%
+  # Keep only the rows where pdx_dx matches one of the prefixes
+  filter(str_detect(pdx_dx, search_pattern)) %>%
+  
+  # Count the frequency of each specific code
+  count(pdx_dx, name = "Frequency", sort = TRUE)
+
+# 3. Join with the definitions for a complete table
+final_summary_table <- frequency_table %>%
+  left_join(icd10_terms, by = c("pdx_dx" = "ICD10")) %>%
+  select(ICD10 = pdx_dx, Definition, Frequency) # Reorder for clarity
+
+final_summary_table
+```
+
+
+```{r}
+data %>%
+  filter(str_detect(pdx_dx, "A028"))
+
+```
+
+
+```{r}
+# Remove
+# A879	2088	Viral meningitis, unspecified
+# K520	1336	Gastroenteritis and colitis due to radiation
+# A87 Viral meningitis
+# A870	97	Enteroviral meningitis (G02.0)
+# A878	88	Other viral meningitis
+# A872	34	Lymphocytic choriomeningitis
+# A871	9	Adenoviral meningitis (G02.0)
+# N390	2	Urinary tract infection, site not specified
+# C18x  0 Malignant neoplasm of colon
+# A064 Amoebic liver abscess
+# A065 Amoebic lung abscess
+# A066 Amoebic brain abscess (G07*)
+# A067 Cutaneous amoebiasis
+# A068 Amoebic infection of other sites
+# A069 Amoebiasis, unspecified
+# B961 1 Klebsiella pneumoniae [K. pneumoniae] as the cause of diseases classified to other chapters
+# B965 1 Pseudomonas (aeruginosa) as the cause of diseases classified to other chapters
+# K521 Toxic gastroenteritis and colitis, Drug-induced gastroenteritis and colitis
+# K523	Indeterminate colitis
+# B781 4 Cutaneous strongyloidiasis
+# B787 158 Disseminated strongyloidiasis
+# B778 29 Ascariasis with other complications
+# A022 528 Localized salmonella infections
+# A028 203 Other specified salmonella infections
+
+# Define the ICD-10 codes to remove
+codes_to_remove <- c("A879", "K520", "A870", "A878", "A872", "A871", "N390", "C18", "A064", "A065", "A066", "A067", "A068", "A069", "B961", "B965", "K521", "K523", "B781", "B787", "B778", "A028")
+
+# Filter the data to exclude the specified codes
+data <- data %>%
+  filter(!pdx_dx %in% codes_to_remove)
+data
+```
+
+
+
+```{r}
+# data[data$pdx != data$pdx_dx, ]
+data %>%
+  filter(trimws(pdx) != trimws(pdx_dx))
+```
+
+# Outcome (Discharge status & type)
+
+```{r}
+# Count frequency of each discharge type
+dischs_freq <- data %>%
+  count(dischs, name = "Frequency") %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1)) %>%
+  arrange(desc(Frequency))
+dischs_freq
+```
+
+
+```{r}
+# Count frequency of each discharge type
+discht_freq <- data %>%
+  count(discht, name = "Frequency") %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1)) %>%
+  arrange(desc(Frequency))
+discht_freq
+```
+
+
+```{r}
+data <- data %>%
+  mutate(
+    outcome = case_when(
+      dischs %in% c(1, 2) | discht == 1 ~ "Recovery",
+      discht == 4 ~ "Refer",
+      discht %in% c(2, 3) | dischs == 3 ~ "Not Recovery/Against advice", 
+      dischs == 9 | discht %in% c(8, 9) ~ "Dead",
+      TRUE ~ "Other"
+    )
+  )
+```
+
+
+```{r}
+data %>%
+  filter(outcome == "Other")
+```
+
+```{r}
+data %>%
+  filter(outcome == "Dead")
+```
+
+# Outcome dead but inconsist datedsc and DEATH_DATE
+
+```{r}
+# --- Step 1 & 2: Filter data and calculate days to death ---
+
+# This code filters for deceased patients, ensures the date columns are in Date format,
+# calculates the difference, and filters for sensible values (death on or after discharge).
+discht89 <- data %>%
+  filter(outcome == "Dead" & !is.na(datedsc) & !is.na(DEATH_DATE)) %>%
+  mutate(
+    datedsc = as.Date(datedsc),
+    DEATH_DATE = as.Date(DEATH_DATE),
+    days_to_death = as.numeric(DEATH_DATE - datedsc)
+  )
+
+discht89
+```
+
+```{r}
+sum(is.na(discht89$DCAUSE_OTH))
+```
+
+
+```{r}
+# --- Step 3: Create the histogram ---
+
+# Now, we plot the 'days_to_death' column from the data frame we just created.
+ggplot(discht89, aes(x = days_to_death)) +
+  geom_histogram() +
+  labs(
+    title = "Distribution of Time from Discharge to Death",
+    x = "Days Between Discharge and Death",
+    y = "Number of Patients"
+  ) +
+  theme_minimal()+
+  
+  # This is the new line to cap the y-axis
+  coord_cartesian(ylim = c(0, 200))
+```
+
+```{r}
+Incons_dead <- discht89 %>%
+  filter(days_to_death > 2 | days_to_death < -2 )
+
+Incons_dead
+```
+
+```{r}
+# write.csv(Incons_dead, "Incons_dead.csv",fileEncoding = "UTF-8")
+```
+
+
+```{r}
+data_raw[ data_raw$hn == 'PezvDRs2W7g=' , ]
+```
+
+
+```{r}
+discht89 %>%
+  filter(days_to_death > 2 | days_to_death < -2 ) %>%
+  select(dateadm, datedsc, DEATH_DATE, DCAUSE_OTH, days_to_death)
+  
+``` 
+
+```{r}
+discht89 %>%
+  filter(days_to_death < -31 | days_to_death > 31)
+```
+
+
+```{r}
+# Day to Death
+data <- data %>%
+  mutate(
+    datedsc = as.Date(datedsc),
+    DEATH_DATE = as.Date(DEATH_DATE),
+    days_to_death = if_else(
+      outcome == "Dead" & !is.na(datedsc) & !is.na(DEATH_DATE),
+      as.numeric(DEATH_DATE - datedsc),
+      NA_real_
+    )
+  )
+data
+
+```
+
+
+```{r}
+data <- data %>%
+  # This is the updated filter to create the -31 to +31 day window
+  filter( is.na(days_to_death) | (days_to_death >= -31 & days_to_death <= 31))
+
+data
+
+# 3,155,071 - 3,155,045 = 26
+```
+
+
+# Refer
+
+```{r}
+data %>%
+  filter(discht == 4)
+```
+
+```{r}
+# This pipeline finds all visits for any patient who has at least one record with discht == 4
+discht4 <- data %>%
+  group_by(hn, age_y) %>%
+  filter(any(discht == 4)) %>%
+  ungroup() %>%
+  
+  # Optional: Arrange the results to see all visits for each patient grouped together
+  arrange(hn, age_y, dateadm) %>%
+  select(hn, age_y, age_m, dateadm, datedsc, DEATH_DATE, DCAUSE_OTH, pdx_dx, sec_dx, discht, hostype, hcode)
+
+discht4
+```
+
+```{r}
+# write.csv(discht4, "discht4.csv")
+```
+
+
+# Remove duplication
+
+```{r}
+# Use distinct() to keep only unique rows based on 'hn' and 'dateadm'
+data <- data %>%
+  distinct(hn, dateadm, .keep_all = TRUE)
+
+data
+
+# 3,155,045 - 3,154,480 = 565
+```
+
+# Remove Recurrent admit within 10 days
+
+```{r}
+# First, calculate the days since the last admission, just like in the original code
+readmissions_within_10_days <- data %>%
+  # IMPORTANT: Sort by patient, age, and then chronologically by admission date
+  arrange(hn, age_y, dateadm) %>%
+
+  # Group the data so calculations are done separately for each patient of a certain age
+  group_by(hn, age_y) %>%
+
+  # Calculate the difference in days from the *previous* admission within that group
+  mutate(days_since_last_adm = as.numeric(dateadm - lag(dateadm))) %>%
+
+  # Ungroup the data frame for further operations
+  ungroup() %>%
+
+  # Keep only the readmissions that occurred within 10 days or less
+  filter(days_since_last_adm <= 10)
+
+# Display the identified readmissions
+readmissions_within_10_days
+```
+
+
+```{r}
+readmission_summary <- readmissions_within_10_days %>%
+
+  # 1. Remove any leading/trailing whitespace from the diagnosis code
+  mutate(pdx_dx = trimws(pdx_dx)) %>%
+
+  # 2. Count the frequency of each diagnosis code and sort descending
+  count(pdx_dx, name = "Frequency", sort = TRUE) %>%
+
+  # 3. Join with the ICD-10 definitions
+  #    We match the 'pdx_dx' column from our frequency count
+  #    with the 'ICD10' column in the icd10_terms data frame.
+  left_join(icd10_terms, by = c("pdx_dx" = "ICD10")) %>%
+
+  # 4. (Optional) Reorder columns for better readability
+  select(pdx_dx, Definition, Frequency)
+
+
+# --- Display the result ---
+print(readmission_summary)
+```
+
+```{r}
+# 1. Define the list of specific gastroenteritis-related ICD-10 codes
+gastro_codes <- c("A099", "A090", "A085", "A084", "A058", "A059", "A049", "A048", "B818", "K529", "K528")
+
+# 2. Filter the readmissions data frame
+mixed_diagnosis_readmissions <- readmissions_within_10_days %>%
+
+  # Group by the patient identifier to look at all their visits together
+  group_by(hn, age_y) %>%
+
+  # Keep only the groups that meet BOTH of the following conditions:
+  #   a) At least ONE visit in the group has a pdx_dx IN the gastro_codes list.
+  #   b) At least ONE visit in the group has a pdx_dx NOT IN the gastro_codes list.
+  filter(
+    any(pdx_dx %in% gastro_codes) &
+    any(!pdx_dx %in% gastro_codes)
+  ) %>%
+
+  # Ungroup the data frame for any further operations
+  ungroup() %>%
+
+  # (Optional) Arrange by patient and date to see the sequence clearly
+  arrange(hn, age_y, dateadm)
+
+
+# --- Display the resulting rows ---
+mixed_diagnosis_readmissions
+
+```
+
+
+```{r}
+# 1. Define the list of specific gastroenteritis-related ICD-10 codes
+gastro_codes <- c("A099", "A090", "A085", "A084", "A058", "A059", "A049", "A048", "B818", "K529", "K528")
+
+# --- Part 1: Preparation and Flagging ---
+# First, we calculate time between visits, flag the diagnosis type,
+# and group visits into "episodes of care".
+
+prepared_data <- data %>%
+  # ALWAYS start by sorting by patient and date
+  arrange(hn, age_y, dateadm) %>%
+
+  # Group by patient to calculate time differences
+  group_by(hn, age_y) %>%
+
+  # Create helper columns
+  mutate(
+    # Rule 1: Flag admissions with gastro_codes
+    dx_type = if_else(pdx_dx %in% gastro_codes, "unspecific_dx", "specific_dx"),
+
+    # Calculate days since the last admission
+    days_since_last_adm = as.numeric(dateadm - lag(dateadm)),
+
+    # Create an ID for each "episode of care". A new episode starts
+    # when a visit is the first ever, or it occurs > 10 days after the last one.
+    episode_id = cumsum(is.na(days_since_last_adm) | days_since_last_adm > 10)
+  ) %>%
+  ungroup() # Ungroup for the next step
+
+
+# --- Part 2: Apply Rules 2 & 3 to Clean the Data ---
+# Now we group by each episode and apply your logic to decide which rows to keep.
+
+cleaned_data <- prepared_data %>%
+  # Group by each unique episode of care for each patient
+  group_by(hn, age_y, episode_id) %>%
+
+  # Apply the filtering logic based on your rules
+  filter(
+    # Rule 3 Logic: If an episode contains ANY specific diagnoses,
+    # keep ONLY the rows with the specific diagnoses.
+    (any(dx_type == "specific_dx") & dx_type == "specific_dx") |
+
+    # Rule 2 Logic: If an episode does NOT contain any specific diagnoses
+    # (i.e., they are all unspecific), then keep ONLY the first row of that episode.
+    (!any(dx_type == "specific_dx") & row_number() == 1)
+  ) %>%
+  ungroup() # %>% # Final ungroup
+
+  # Remove the helper columns for the final result
+  #select(-dx_type, -days_since_last_adm, -episode_id)
+
+cleaned_data
+# 3,154,480 - 3,122,338 = 32,142
+```
+
+
+```{r}
+cleaned_data[cleaned_data$hn == "+0OfCapneod7D7sLfKJMAA==",]
+```
+
+```{r}
+data <- cleaned_data
+```
+
+
+```{r}
+# Sort by 'dateadm' in ascending order (oldest to newest)
+data <- data %>% arrange(dateadm)
+data
+```
+
+# Missing Age, Sex
+```{r}
+data <- data %>%
+  filter(!is.na(age_y) & !is.na(sex))
+
+data
+```
+
+# Other outcome (not dead) but DCAUSE_OTH related to diarrhea
+
+```{r}
+data <- data %>%
+  mutate(
+    datedsc = as.Date(datedsc),
+    DEATH_DATE = as.Date(DEATH_DATE),
+    days_to_death = as.numeric(DEATH_DATE - datedsc)
+  )
+data
+```
+
+
+```{r}
+dead_in31 <- data %>%
+  filter(
+    # Condition 1: The outcome is NOT "Dead"
+    outcome != "Dead",
+    
+    # Condition 2: A DEATH_DATE exists for this record (is not NA)
+    !is.na(DEATH_DATE),
+    
+    # Condition 3: A DCAUSE_OTH also exists for this record (is not NA)
+    !is.na(DCAUSE_OTH),
+    
+    days_to_death <= 31,
+    days_to_death >= -31
+  )
+
+dead_in31
+```
+
+```{r}
+# ติดเชื้อทางเดินอาหาร
+# ติดเชื้อในทางเดินอาหาร
+# ติดเชื้อในลำไส้
+# ลำไส้อักเสบ
+# ติดเชื้อในช่องท้อง
+# ติดเชื้อในช่องท้องรุนแรง
+# ลำไส้อักเสบติดเชื้อ
+# ลำไส้ติดเชื้อ
+# ติดเชื้อในระบบทางเดินอาหาร
+# ท้องเสียติดเชื้อ
+# อุจจาระร่วง
+# ท้องเสีย
+# ท้องเสียรุนแรง
+# ท้องเสียเฉียบพลัน
+# ติดเชื้อระบบทางเดินอาหาร
+# ท้องเสียจากการติดเชื้อ
+# อุจจาระร่วงเฉียบพลัน
+# อุจจาระร่วงเรื้อรัง
+# อุจจาระร่วงติดเชื้อ
+# ติดเชื้อในทางเดินอาหารรุนแรง
+# ท้องเสียเรื้อรัง
+# ถ่ายเหลวเรื้อรัง
+# ถ่ายเหลวติดเชื้อ
+# ท้องร่วงเฉียบพลัน
+# ติดเชื้อทางเดินอาหารรุนแรง
+# ลำไส้อักเสบเฉียบพลัน
+# ลำไส้อักเสบเรื้อรัง
+# ลำไส้ติดเชื้อรุนแรง
+# โรคลำไส้อักเสบ
+# ติดเชื้อในกระแสเลือดจากลำไส้อักเสบ
+# ทางเดินอาหารติดเชื้อ
+# ลำใส้อักเสบ
+# โรคอุจจาระร่วงเฉียบพลัน
+# ลำไส้ใหญ่อักเสบ
+# ลำไส้ใหญ่อักเสบรุนแรง
+# โรคท้องร่วง
+# ติดเชื้อในระบบทางเดินอาหารรุนแรง
+# โรคติดเชื้อในทางเดินอาหาร
+# โรคท้องร่วงเฉียบพลัน
+# ติดเชื้อในช่องท้องอย่างรุนแรง
+# ติดเชื้อในทางเดินอาหารและในกระแสเลือด
+# ติดเชื้อในลำใส้
+# ติดเชื้อในลำไส้รุนแรง
+# ท้องร่วงรุนแรง
+# โรคอุจจาระร่วง
+# ติดเชื้อลำไส้อักเสบ
+# ติดเชื้อทางเดินอาหารหรืออุจจาระร่วง
+# ติดเชื้อในลำไส้ใหญ่
+# ท้องร่วง
+# ลำใส้อักเสบติดเชื้อ
+# ลำไส้อักเสบติดเชื้อเฉียบพลัน	
+# ลำไส้เน่า
+# อาหารเป็นพิษ
+# อุจาระร่วงเฉียบพลัน
+# โรคลำไส้
+# กระเพาะอาหารและลำไส้อักเสบ
+# ติดเชื้อทางเดินอาหาร หรือ อุจจาระร่วง
+# ติดเชื้อในลำไส้และกระแสเลือด
+# ติดเชื้อในทางเดินอาหารและกระแสเลือด
+# ท้องร่วงจากการติดเชื้อ
+# ท้องร่วงเรื้อรัง
+# ท้องเสียติดเชื้อรุนแรง
+# ท้องเสียอย่างรุนแรง
+# ภาวะติดเชื้อในทางเดินอาหารรุนแรง
+# ภาวะติดเชื้อในระบบทางเดินอาหาร
+# ภาวะท้องเสียจากการติดเชื้อ
+# ลำไส้อักเสบจากการติดเชื้อ
+# ลำไส้อักเสบและติดเชื้อในกระแสเลือด
+# โรคลำไส้ติดเชื้อ
+# โรคลำไส้อักเสบติดเชื้อ
+# โรคอุจจาระร่วง เรื้อรัง
+# โรคอุจจาระร่วงติดเชื้อ
+# กระเพาะลำไส้อักเสบ
+# กระเพาะอาหารและลำไส้อักเสบติดเชื้อ
+# การติดเชื้อทางเดินอาหาร
+# ติดเชื้อทางเดินอาหารอย่างรุนแรง
+# ติดเชื้อทางเดินอาหารและกระแสเลือด
+# ติดเชื้อและท้องเสียเรื้อรัง
+# ติดเชื้อในกระแสเลือดจากท้องเสีย
+# ติดเชื้อในกระแสเลือดและทางเดินอาหาร
+# ติดเชื้อในทางเดือนอาหารรุนแรง
+# ติดเชื้อในระบบทางเดินอาหารเรื้อรัง
+# ติดเชื้อในลำไส้อย่างรุนแรง
+# ติดเชื้อในลำไส้และกระเพาะ
+# ติดเชื้อในเยื่อบุช่องท้องและลำไส้
+# ถ่ายเหลวอุจจาระติดเชื้อ
+# ถ่ายเหลวเฉียบพลัน
+# ท้องร่วงจากติดเชื้อ
+# ท้องร่วงอย่างรุนแรง
+# ท้องเสียจากการติดเชื้อในทางเดินอาหาร
+# ท้องเสียถ่ายเหลว
+# ท้องเสียถ่ายเหลวเรื้อรัง
+# ท้องเสียเฉียบพลันติดเชื้อ
+# ท้องเสียเรื้อรังจากการติดเชื้อ
+# ภาวะติดเชื้อในทางเดินอาหาร
+#
+
+
+dead_in31 %>%
+  count(DCAUSE_OTH, sort = TRUE)
+```
+
+```{r}
+count_dead_in31 <- dead_in31 %>%
+  count(DCAUSE_OTH, sort = TRUE)
+```
+
+```{r}
+# ขั้นตอนที่ 3: กำหนดรายการคำสำคัญ (Keywords) ที่ต้องการใช้กรอง
+# นำรายการคำที่คุณให้มาสร้างเป็นเวกเตอร์ใน R
+diarrhea_keywords <- c(
+  "ติดเชื้อทางเดินอาหาร", "ติดเชื้อในทางเดินอาหาร", "ติดเชื้อในลำไส้", "ลำไส้อักเสบ",
+  "ติดเชื้อในช่องท้อง", "ติดเชื้อในช่องท้องรุนแรง", "ลำไส้อักเสบติดเชื้อ", "ลำไส้ติดเชื้อ",
+  "ติดเชื้อในระบบทางเดินอาหาร", "ท้องเสียติดเชื้อ", "อุจจาระร่วง", "ท้องเสีย",
+  "ท้องเสียรุนแรง", "ท้องเสียเฉียบพลัน", "ติดเชื้อระบบทางเดินอาหาร", "ท้องเสียจากการติดเชื้อ",
+  "อุจจาระร่วงเฉียบพลัน", "อุจจาระร่วงเรื้อรัง", "อุจจาระร่วงติดเชื้อ", "ติดเชื้อในทางเดินอาหารรุนแรง",
+  "ท้องเสียเรื้อรัง", "ถ่ายเหลวเรื้อรัง", "ถ่ายเหลวติดเชื้อ", "ท้องร่วงเฉียบพลัน",
+  "ติดเชื้อทางเดินอาหารรุนแรง", "ลำไส้อักเสบเฉียบพลัน", "ลำไส้อักเสบเรื้อรัง",
+  "ลำไส้ติดเชื้อรุนแรง", "โรคลำไส้อักเสบ", "ติดเชื้อในกระแสเลือดจากลำไส้อักเสบ",
+  "ทางเดินอาหารติดเชื้อ", "ลำใส้อักเสบ", "โรคอุจจาระร่วงเฉียบพลัน", "ลำไส้ใหญ่อักเสบ",
+  "ลำไส้ใหญ่อักเสบรุนแรง", "โรคท้องร่วง", "ติดเชื้อในระบบทางเดินอาหารรุนแรง",
+  "โรคติดเชื้อในทางเดินอาหาร", "โรคท้องร่วงเฉียบพลัน", "ติดเชื้อในช่องท้องอย่างรุนแรง",
+  "ติดเชื้อในทางเดินอาหารและในกระแสเลือด", "ติดเชื้อในลำใส้", "ติดเชื้อในลำไส้รุนแรง",
+  "ท้องร่วงรุนแรง", "โรคอุจจาระร่วง", "ติดเชื้อลำไส้อักเสบ", "ติดเชื้อทางเดินอาหารหรืออุจจาระร่วง",
+  "ติดเชื้อในลำไส้ใหญ่", "ท้องร่วง", "ลำใส้อักเสบติดเชื้อ", "ลำไส้อักเสบติดเชื้อเฉียบพลัน",
+  "ลำไส้เน่า", "อาหารเป็นพิษ", "อุจาระร่วงเฉียบพลัน", "โรคลำไส้", "กระเพาะอาหารและลำไส้อักเสบ",
+  "ติดเชื้อทางเดินอาหาร หรือ อุจจาระร่วง", "ติดเชื้อในลำไส้และกระแสเลือด",
+  "ติดเชื้อในทางเดินอาหารและกระแสเลือด", "ท้องร่วงจากการติดเชื้อ", "ท้องร่วงเรื้อรัง",
+  "ท้องเสียติดเชื้อรุนแรง", "ท้องเสียอย่างรุนแรง", "ภาวะติดเชื้อในทางเดินอาหารรุนแรง",
+  "ภาวะติดเชื้อในระบบทางเดินอาหาร", "ภาวะท้องเสียจากการติดเชื้อ", "ลำไส้อักเสบจากการติดเชื้อ",
+  "ลำไส้อักเสบและติดเชื้อในกระแสเลือด", "โรคลำไส้ติดเชื้อ", "โรคลำไส้อักเสบติดเชื้อ",
+  "โรคอุจจาระร่วง เรื้อรัง", "โรคอุจจาระร่วงติดเชื้อ", "กระเพาะลำไส้อักเสบ",
+  "กระเพาะอาหารและลำไส้อักเสบติดเชื้อ", "การติดเชื้อทางเดินอาหาร", "ติดเชื้อทางเดินอาหารอย่างรุนแรง",
+  "ติดเชื้อทางเดินอาหารและกระแสเลือด", "ติดเชื้อและท้องเสียเรื้อรัง",
+  "ติดเชื้อในกระแสเลือดจากท้องเสีย", "ติดเชื้อในกระแสเลือดและทางเดินอาหาร",
+  "ติดเชื้อในทางเดือนอาหารรุนแรง", "ติดเชื้อในระบบทางเดินอาหารเรื้อรัง",
+  "ติดเชื้อในลำไส้อย่างรุนแรง", "ติดเชื้อในลำไส้และกระเพาะ", "ติดเชื้อในเยื่อบุช่องท้องและลำไส้",
+  "ถ่ายเหลวอุจจาระติดเชื้อ", "ถ่ายเหลวเฉียบพลัน", "ท้องร่วงจากติดเชื้อ",
+  "ท้องร่วงอย่างรุนแรง", "ท้องเสียจากการติดเชื้อในทางเดินอาหาร", "ท้องเสียถ่ายเหลว",
+  "ท้องเสียถ่ายเหลวเรื้อรัง", "ท้องเสียเฉียบพลันติดเชื้อ", "ท้องเสียเรื้อรังจากการติดเชื้อ",
+  "ภาวะติดเชื้อในทางเดินอาหาร"
+)
+
+# ขั้นตอนที่ 4: สร้างรูปแบบการค้นหา (Search Pattern)
+# เราจะรวมทุกคำใน 'diarrhea_keywords' ให้เป็นข้อความเดียวกัน โดยคั่นแต่ละคำด้วยเครื่องหมาย "|" (หมายถึง "หรือ")
+# เพื่อสร้างเงื่อนไขการค้นหาว่า "เจอคำใดก็ได้จากในรายการนี้"
+search_pattern <- paste(diarrhea_keywords, collapse = "|")
+
+# ขั้นตอนที่ 5: กรองข้อมูล
+# !!! สำคัญมาก: กรุณาเปลี่ยน 'cause_of_death_column' เป็นชื่อคอลัมน์ที่เก็บสาเหตุการตายในไฟล์ของคุณจริงๆ !!!
+# ตัวอย่าง: หากคอลัมน์ชื่อ 'DISEASE' ให้เปลี่ยนเป็น
+# filtered_df <- df %>% filter(str_detect(DISEASE, search_pattern))
+#
+cause_of_death_column_name <- "DCAUSE_OTH"  # <--- แก้ไขชื่อคอลัมน์ตรงนี้
+
+# ตรวจสอบว่ามีคอลัมน์นี้ในข้อมูลหรือไม่ก่อนทำการกรอง
+if(cause_of_death_column_name %in% names(count_dead_in31)) {
+  filtered_df <- count_dead_in31 %>%
+    filter(str_detect(.data[[cause_of_death_column_name]], search_pattern))
+
+  # ขั้นตอนที่ 6: แสดงผลลัพธ์
+  # แสดงตัวอย่างข้อมูลที่กรองแล้ว 10 แถวแรก
+  print("ตัวอย่างข้อมูลที่กรองแล้ว:")
+  print(head(filtered_df, 10))
+
+  # แสดงจำนวนแถวทั้งหมดที่พบ
+  cat("\nพบข้อมูลที่เกี่ยวข้องกับโรคทางเดินอาหารทั้งหมด:", nrow(filtered_df), "รายการ\n")
+
+  # ขั้นตอนที่ 7 (ทางเลือก): บันทึกข้อมูลที่กรองแล้วเป็นไฟล์ใหม่
+  # write.csv(filtered_df, "filtered_deaths_diarrhea.csv", row.names = FALSE, fileEncoding = "UTF-8-BOM")
+  # cat("\nข้อมูลที่กรองแล้วถูกบันทึกเป็นไฟล์ 'filtered_deaths_diarrhea.csv' เรียบร้อยแล้ว\n")
+
+} else {
+  cat(sprintf("\nผิดพลาด: ไม่พบคอลัมน์ชื่อ '%s' ในไฟล์ข้อมูล\n", cause_of_death_column_name))
+  cat("กรุณาตรวจสอบและแก้ไขตัวแปร 'cause_of_death_column_name' ในโค้ดให้ถูกต้อง\n")
+}
+filtered_df
+```
+
+
+
+```{r}
+# write.csv(count_dead_in31, "count_dead_in31.csv")
+```
+
+
+
+```{r}
+# Step 2: Define keywords
+# 2.1 Direct word matches
+keywords <- c("ท้องเสีย", "ท้องร่วง", "อุจจาระร่วง", "ลำไส้อักเสบ", 
+              "ลำไส้ติดเชื้อ", "อาหารเป็นพิษ", "ทางเดินอาหาร")
+
+# 2.2 Combined pattern (any order)
+pattern_combo <- "(ติดเชื้อ|อักเสบ).*(ลำไส้|อาหาร|ช่องท้อง)|(ลำไส้|อาหาร|ช่องท้อง).*(ติดเชื้อ|อักเสบ)"
+
+# 2.3 Exclusion terms
+ex_kw <- c("เลือดออก", "ช่องท้อง", "มะเร็ง", "วัณโรค", "อุดตัน", 
+           "แตก", "ทะลุ", "ไส้เลื่อน", "ไส้แตก", "ลำไส้ไม่มีปมประสาท", 
+           "ไส้ขาดเลือด", "หลอดเลือด", "น้ำในช่องท้อง", "ช่องท้อง", 
+           "แผล", "สำลัก", "เสียเลือด")
+
+# Step 3: Build filters
+inclusion_filter <- str_detect(count_dead_in31$DCAUSE_OTH, str_c(keywords, collapse = "|")) |
+                    str_detect(count_dead_in31$DCAUSE_OTH, regex(pattern_combo))
+
+exclusion_filter <- !str_detect(count_dead_in31$DCAUSE_OTH, str_c(ex_kw, collapse = "|"))
+
+# Step 4: Apply combined filter
+dead_diarrhea <- count_dead_in31 |> filter(inclusion_filter & exclusion_filter)
+dead_diarrhea
+```
+
+```{r}
+exclusion_filter2 <- !str_detect(filtered_df$DCAUSE_OTH, str_c(ex_kw, collapse = "|"))
+filtered_df <- filtered_df |> filter( exclusion_filter2)
+filtered_df
+```
+
+```{r}
+vec1 <- unique(filtered_df$DCAUSE_OTH)
+vec2 <- unique(dead_diarrhea$DCAUSE_OTH)
+
+# values in diarrhea_df but not in dead_diarrhea
+only_in_diarrhea <- setdiff(vec1, vec2)
+
+# values in dead_diarrhea but not in diarrhea_df
+only_in_dead <- setdiff(vec2, vec1)
+
+# values in both
+in_both <- intersect(vec1, vec2)
+
+only_in_diarrhea
+only_in_dead
+in_both
+
+```
+
+```{r}
+only_in_diarrhea <- as.data.frame(only_in_diarrhea)
+only_in_dead     <- as.data.frame(only_in_dead)
+in_both          <- as.data.frame(in_both)
+
+class(only_in_diarrhea)
+class(only_in_dead)
+class(in_both)
+```
+
+
+```{r}
+final_union <- bind_rows(only_in_diarrhea, only_in_dead, in_both) |>
+  distinct()   # remove any duplicates based on all columns
+
+cat("only_in_diarrhea:", nrow(only_in_diarrhea), "\n")
+cat("only_in_dead:", nrow(only_in_dead), "\n")
+cat("in_both:", nrow(in_both), "\n")
+cat("total after union:", nrow(final_union), "\n")
+
+```
+
+
+
+```{r}
+final_union
+```
+
+```{r}
+final_union <- final_union %>%
+  mutate(DCAUSE_OTH = coalesce(only_in_diarrhea, only_in_dead, in_both)) %>%
+  select(DCAUSE_OTH)  # Keep only the merged column
+
+final_union
+# 725 cause
+```
+
+```{r}
+dead_in31 <- dead_in31 %>%
+  mutate(diarrhea_dead = DCAUSE_OTH %in% final_union$DCAUSE_OTH)
+
+```
+
+```{r}
+table(dead_in31$diarrhea_dead)
+
+```
+
+```{r}
+other_outcome_dead <- dead_in31 %>% 
+  filter(diarrhea_dead == TRUE)
+
+other_outcome_dead
+```
+
+```{r}
+table(other_outcome_dead$outcome) 
+```
+
+```{r}
+outcome_summary <- data %>%
+  count(outcome, name = "Frequency") %>%
+  mutate(
+    Percentage = round(Frequency / sum(Frequency) * 100, 1)
+  ) %>%
+  arrange(desc(Frequency))
+
+outcome_summary
+```
+
+# Diarrhea_dead
+
+```{r}
+data <- data %>%
+  mutate(
+    diarrhea_dead = outcome != "Dead" &
+                    !is.na(DEATH_DATE) &
+                    !is.na(DCAUSE_OTH) &
+                    days_to_death >= -31 & days_to_death <= 31 &
+                    DCAUSE_OTH %in% final_union$DCAUSE_OTH &
+                    paste(hn, age_y) %in% paste(other_outcome_dead$hn, other_outcome_dead$age_y)
+  )
+
+data
+```
+
+```{r}
+table(data$diarrhea_dead)
+```
+
+
+```{r}
+data <- data %>%
+  mutate(
+    diarrhea_dead = case_when(
+      outcome == "Dead" ~ TRUE,
+      outcome != "Dead" &
+        !is.na(DEATH_DATE) &
+        !is.na(DCAUSE_OTH) &
+        days_to_death >= -31 & days_to_death <= 31 &
+        DCAUSE_OTH %in% final_union$DCAUSE_OTH &
+        paste(hn, age_y) %in% paste(other_outcome_dead$hn, other_outcome_dead$age_y) ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+```
+
+
+```{r}
+table(data$diarrhea_dead)
+
+# Other + Dead
+# 2092 + 17640 = 19732
+```
+
+# CFR
+
+```{r}
+cfr_result <- data %>%
+  summarise(
+    total_cases = n(),
+    total_deaths = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    cfr_percent = (total_deaths / total_cases) * 100
+  )
+
+cfr_result
+```
+
+
+
+
+# Repeated episodes 
+
+```{r}
+# Create a column for number of admissions per patient
+data <- data %>%
+  group_by(hn) %>%
+  mutate(
+    num_adm = n(),                          # Number of times this patient was admitted
+    repeated = num_adm >= 2                  # TRUE if patient admitted 2 or more times
+  ) %>%
+  ungroup()
+```
+
+```{r}
+
+ggplot(data, aes(x = num_adm)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  scale_x_continuous(breaks = seq(1, max(data$num_adm, na.rm = TRUE), by = 1)) +
+  labs(
+    title = "Distribution of Number of Admissions per Patient",
+    x = "Number of Admissions",
+    y = "Frequency"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+data %>%
+  summarise(
+    mean = mean(num_adm, na.rm = TRUE),
+    sd = sd(num_adm, na.rm = TRUE),
+    median = median(num_adm, na.rm = TRUE),
+    IQR = IQR(num_adm, na.rm = TRUE)
+  )
+```
+
+
+# Hospital Level
+
+```{r}
+Sys.setlocale(locale = "Thai")
+Sys.getlocale()
+#write.csv(data[1:100,], "example_data.csv")
+chosptype <- read.csv("chosptype.csv", encoding = "UTF-8")
+
+# Calculate the frequency of hostype
+hostype_frequency <- data %>%
+  count(hostype, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+# Perform a left join to add columns from chosptype to hostype_frequency
+hostype_frequency <- hostype_frequency %>%
+  left_join(chosptype, by = "hostype")
+```
+
+
+
+```{r}
+# windowsFonts("TH Sarabun New" = windowsFont("TH Sarabun New"))
+# Plot the vertical bar graph with Thai labels
+ggplot(hostype_frequency, aes(x = reorder(hostypename, -Frequency), y = Frequency, fill = hostypename)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Frequency of Hospital Type",
+    x = "Hostype",
+    y = "Frequency"
+  ) +
+  scale_y_continuous(labels = comma) +
+  #theme_minimal(base_family = "TH Sarabun New") +  # Use a font that supports Thai
+  theme(
+    legend.position = "none",  # Remove legend if not needed
+    axis.text.x = element_text(angle = 45, hjust = 1, family = "TH SarabunPSK"),  # Ensure Thai font for x-axis labels
+    axis.text.y = element_text(family = "TH SarabunPSK"),  # Ensure Thai font for y-axis labels
+    plot.title = element_text(family = "TH SarabunPSK")  # Ensure Thai font for the title
+  )
+```
+
+```{r}
+# Create the new "hosLevel" column based on hostype conditions
+data <- data %>%
+  mutate(hosLevel = case_when(
+    hostype %in% c( 7, 9, 3, 8, 14, 16, 17, 18, 19, 20, 99) ~ "Primary",
+    hostype == 6 ~ "Secondary",
+    hostype %in% c( 5) ~ "Tertiary",
+    hostype %in% c(11, 12, 15) ~ "Non public health",
+    TRUE ~ "Unknown"  # Assign "Unknown" if hostype does not match any category
+  ))
+
+# Calculate the frequency of hosLevel
+hosLevel_frequency <- data %>%
+  count(hosLevel, name = "Frequency") %>%
+  arrange(desc(Frequency))  # Sort by frequency in descending order
+
+# View the frequency table
+hosLevel_frequency
+```
+
+```{r}
+# Step 1: Filter unique non-public health hospitals
+non_public_hospitals <- data %>%
+  filter(hosLevel == "Non public health") %>%
+  distinct(hoscode = hcode)
+
+# Step 2: Join with chos data frame and select desired columns
+non_public_info <- non_public_hospitals %>%
+  left_join(chos, by = "hoscode") %>%
+  select(hoscode, hostype, hosname, bed, address) %>%
+  mutate(bed = as.integer(bed)) %>%
+  arrange(desc(bed))
+
+non_public_info
+```
+
+```{r}
+non_public_info <- non_public_info %>%
+  mutate(
+    hosLevel = case_when(
+      # Tertiary conditions
+      bed > 500 |
+      str_detect(hosname, "มะเร็ง|สถาบัน|มหาวิทยาลัย|จิตเวช|ธัญญารักษ์") |
+      hosname == "โรงพยาบาลพญาไท นวมินทร์" ~ "Tertiary",
+
+      # Secondary conditions
+      (bed >= 151 & bed <= 499) |
+      hosname %in% c("โรงพยาบาลบางนา 5", "โรงพยาบาลธีรวัฒน์") ~ "Secondary",
+
+      # Everything else is Primary
+      TRUE ~ "Primary"
+    )
+  )
+non_public_info
+```
+
+
+```{r}
+# write.csv(non_public_info, "non_public_info.csv")
+
+```
+
+
+```{r}
+# Join hosLevel from non_public_info to data by hoscode/hcode
+data <- data %>%
+  left_join(non_public_info %>% select(hoscode, hosLevel_new = hosLevel), 
+            by = c("hcode" = "hoscode")) %>%
+  mutate(
+    hosLevel = if_else(!is.na(hosLevel_new) & hosLevel_new != hosLevel, 
+                       hosLevel_new, 
+                       hosLevel)
+  ) %>%
+  select(-hosLevel_new)  # clean up
+```
+
+```{r}
+data[data$hcode==13814,]
+```
+
+```{r}
+# Calculate the frequency of hosLevel
+hosLevel_frequency <- data %>%
+  count(hosLevel, name = "Frequency") %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1)) %>%
+  arrange(desc(Frequency))
+
+# View the frequency table
+hosLevel_frequency
+```
+
+
+```{r}
+# Plot the bar chart
+ggplot(hosLevel_frequency, aes(x = reorder(hosLevel, -Frequency), y = Frequency, fill = hosLevel)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Frequency of Hospital Care Levels",
+    x = "Hospital Level",
+    y = "Number of Cases"
+  ) +
+  # scale_fill_brewer(palette = "Set3") +  # Colorful palette
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",  # Remove legend since colors represent hosLevel
+    # axis.text.x = element_text(angle = 15, hjust = 1)  # Rotate x-axis labels for readability
+  )
+```
+
+```{r}
+# Step 1: Count pdx_dx by hosLevel
+top_dx_data <- data %>%
+  group_by(hosLevel, pdx_dx) %>%
+  summarise(Admissions = n(), .groups = "drop")
+
+# Step 2: Identify top 5 pdx_dx overall
+top10_dx <- top_dx_data %>%
+  group_by(pdx_dx) %>%
+  summarise(Total = sum(Admissions)) %>%
+  arrange(desc(Total)) %>%
+  slice_head(n = 10) %>%
+  pull(pdx_dx)
+
+top10_dx
+
+# Step 3: Recode other pdx_dx to "Others"
+plot_data <- top_dx_data %>%
+  mutate(pdx_dx_group = ifelse(pdx_dx %in% top10_dx, pdx_dx, "Others")) %>%
+  group_by(hosLevel, pdx_dx_group) %>%
+  summarise(Admissions = sum(Admissions), .groups = "drop")
+
+```
+
+```{r}
+color_palette <- c(
+  "B084" = "darkgreen",  
+  "A084" = "#1f78b4",         
+  "A090" = "#D98324",  
+  "A049" = "#fcae91",     
+  "A059" = "#fb6a4a",   
+  "K529" = "#ffff99", 
+  "A099" = "#FEC260",
+  "Others" = "#bdbdbd"  # gray shade
+)
+
+# Step 4: Plot stacked bar chart
+ggplot(plot_data, aes(x = hosLevel, y = Admissions, fill = pdx_dx_group)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = color_palette, name = "Diagnosis Code") +
+  labs(
+    title = "Top 10 Diagnoses by Hospital Level",
+    x = "Hospital Level",
+    y = "Number of Admissions",
+    fill = "Diagnosis Code"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() 
+```
+
+```{r}
+# Step 4: Plot percentage stacked bar chart
+ggplot(plot_data, aes(x = hosLevel, y = Admissions, fill = pdx_dx_group)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_manual(values = color_palette, name = "Diagnosis Code") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Proportion of Top 10 Diagnoses by Hospital Level",
+    x = "Hospital Level",
+    y = "Proportion of Admissions",
+    fill = "Diagnosis Code"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+
+# A099: Gastroenteritis and colitis of unspecified origin
+# A090: Other and unspecified gastroenteritis and colitis of infectious origin
+# A084: Viral intestinal infection, unspecified
+# A059: Bacterial foodborne intoxication, unspecified
+# A049: Bacterial intestinal infection, unspecified
+# K529: Noninfective gastroenteritis and colitis, unspecified
+# B084: Enteroviral vesicular stomatitis with exanthem
+# A010: Typhoid fever
+# A060: Acute amebic dysentery
+# A020: Salmonella enteritis
+```
+
+```{r}
+# # Create the plot
+# ggplot(data, aes(x = hosLevel, y = Admissions, fill = dx_type)) +
+#   geom_bar(stat = "identity") +
+#   
+#   # Use a simple color palette for the two categories
+#   scale_fill_manual(
+#     name = "Diagnosis Type", 
+#     values = c("unspecific_dx" = "#F8766D", "specific_dx" = "#00BFC4")
+#   ) +
+#   
+#   labs(
+#     title = "Admissions by Diagnosis Type and Hospital Level",
+#     x = "Hospital Level",
+#     y = "Number of Admissions"
+#   ) +
+#   
+#   scale_y_continuous(labels = comma) +
+#   theme_minimal()
+```
+
+
+```{r}
+top_pdx_tertiary <- data %>%
+  filter(hosLevel == "Tertiary") %>%
+  count(pdx_dx, name = "Admissions") %>%
+  arrange(desc(Admissions))
+
+top_pdx_tertiary
+```
+
+
+# Underlying diseases
+
+```{r}
+# Define ICD-10 categories for chronic diseases
+icd_mapping <- list(
+  DM = c("^E1", "O244", "N083", "H360", "H280", "G590", "G632", "M142"),
+  HT = c("^I10", "^I11", "^I12", "^I13", "^I14", "^I15"),
+  CKD = c("^N183", "^N184", "^N185", "^N186"),
+  CVD = c("^I20", "^I21", "^I22", "^I23", "^I24", "^I25"),
+  CHF = c("^I50"),
+  COPD = c("^J44"),
+  Stroke = c("^I60", "^I61", "^I62", "^I63", "^I64", "^I69"),
+  HIV = c("B20", "B21", "B22", "B23", "B24", "B20", "Z21"), 
+  COVID = c ("U071", "U072", "B342")
+)
+
+# Function to check if sec_dx contains an ICD-10 code from the list
+check_disease <- function(dx, icd_codes) {
+  return(as.integer(any(str_detect(dx, icd_codes))))  # Return 1 if any match, else 0
+}
+
+# Apply classification function for each disease category
+data <- data %>%
+  mutate(
+    DM = sapply(sec_dx, check_disease, icd_codes = icd_mapping$DM),
+    HT = sapply(sec_dx, check_disease, icd_codes = icd_mapping$HT),
+    CKD = sapply(sec_dx, check_disease, icd_codes = icd_mapping$CKD),
+    CVD = sapply(sec_dx, check_disease, icd_codes = icd_mapping$CVD),
+    CHF = sapply(sec_dx, check_disease, icd_codes = icd_mapping$CHF),
+    COPD = sapply(sec_dx, check_disease, icd_codes = icd_mapping$COPD),
+    Stroke = sapply(sec_dx, check_disease, icd_codes = icd_mapping$Stroke),
+    COVID = sapply(sec_dx, check_disease, icd_codes = icd_mapping$COVID),
+  )
+
+data
+```
+
+```{r}
+# Total number of records
+total_rows <- nrow(data)
+
+# Summarize and calculate percentage
+chronic_disease_counts <- data %>%
+  select(DM, HT, CKD, CVD, CHF, COPD, Stroke, COVID) %>%
+  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  pivot_longer(cols = everything(), names_to = "Chronic_Disease", values_to = "Frequency") %>%
+  mutate(Percentage = round(Frequency / total_rows * 100, 1)) %>%
+  arrange(desc(Frequency))
+
+# View result
+print(chronic_disease_counts)
+```
+
+
+```{r}
+# Plot the bar chart
+ggplot(chronic_disease_counts, aes(x = reorder(Chronic_Disease, -Frequency), y = Frequency, fill = Chronic_Disease)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Frequency of Chronic Diseases",
+    x = "Chronic Disease",
+    y = "Number of Cases"
+  ) +
+  scale_fill_brewer(palette = "Set3") +  # Use a colorful palette
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",  # Remove legend since colors match labels
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for better readability
+  )
+```
+
+# Age groups
+
+
+```{r}
+data %>%
+  summarise(
+    Median_Age = median(age_y, na.rm = TRUE),
+    Q1_Age = quantile(age_y, 0.25, na.rm = TRUE),
+    Q3_Age = quantile(age_y, 0.75, na.rm = TRUE)
+  )
+```
+
+
+```{r}
+admissions_by_age <- data %>%
+  group_by(age_y) %>%
+  summarise(Admissions = n()) %>%
+  arrange(age_y)
+
+
+ggplot(admissions_by_age, aes(x = age_y, y = Admissions)) +
+  geom_line(color = "steelblue", size = 1) +
+  labs(
+    title = "Number of Admissions by Age",
+    x = "Age (years)",
+    y = "Number of Admissions"
+  ) +
+  scale_x_continuous(breaks = seq(0, 100, by = 5)) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() 
+```
+
+
+```{r}
+# Create age groups (single-year increments for detailed lines)
+count_admit_year <- data %>%
+  filter(!is.na(age_y)) %>% # Exclude NA age values
+  group_by(dx_gyear, age_y) %>% 
+  summarise(Admissions = n(), .groups = "drop")
+
+# Plot the multiple-line chart by age and year
+ggplot(count_admit_year, aes(x = age_y, y = Admissions, color = factor(dx_gyear))) +
+  geom_line(size = 1) +
+  labs(
+    title = "Number of Admissions by Age and Year",
+    x = "Age (years)",
+    y = "Number of Admissions",
+    color = "Year"
+  ) +
+  scale_x_continuous(breaks = seq(0, 100, by = 5)) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    panel.grid.major = element_line(color = "gray80", linewidth = 0.5),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+
+```{r}
+data <- data %>%
+  mutate(
+    age_group = case_when(
+      age_y < 5 ~ "< 5",
+      age_y >= 5 & age_y <= 18 ~ "5-18",
+      age_y > 18 & age_y <= 40 ~ "18-40",
+      age_y > 40 & age_y <= 60 ~ "40-60",
+      age_y > 60 ~ "> 60",
+      TRUE ~ "Unknown"
+    )
+  )
+
+```
+
+```{r}
+age_levels <- c("< 5", "5-18", "18-40", "40-60", "> 60")
+data <- data %>%
+  mutate(age_group = factor(age_group, levels = age_levels))
+```
+
+
+```{r}
+data %>%
+  filter(age_group == "Unknown")
+```
+
+```{r}
+data %>%
+  count(age_group) %>%                         # count rows by age_group
+  mutate(
+    percent = n / sum(n) * 100                 # calculate percentage
+  ) %>%
+  arrange(desc(n))                             # sort by frequency
+```
+
+
+```{r}
+# Count admissions by age group
+age_group_counts <- data %>%
+  group_by(age_group) %>%
+  summarise(Admissions = n(), .groups = "drop") %>%
+  mutate(age_group = factor(age_group, levels = c("< 5", "5-18", "18-40", "40-60", "> 60", "Unknown")))
+
+# Plot the bar chart
+ggplot(age_group_counts, aes(x = age_group, y = Admissions)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(
+    title = "Admissions by Age Group",
+    x = "Age Group",
+    y = "Number of Admissions"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+```
+
+```{r}
+# --- Step 1: Calculate Admissions and CFR by Age Group ---
+# This groups the data by age_group and calculates both the total admissions
+# and the case fatality rate for each group.
+age_summary <- data %>%
+  group_by(age_group) %>%
+  summarise(
+    Admissions = n(),
+    total_deaths = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    CFR_percent = (total_deaths / Admissions) * 100
+  )
+
+# --- Step 2: Create the Dual-Axis Plot ---
+
+# To plot two different scales, we need to determine a scaling factor.
+# This factor transforms the CFR data to fit visually on the same scale as the admissions data.
+scaling_factor <- max(age_summary$Admissions, na.rm = TRUE) / max(age_summary$CFR_percent, na.rm = TRUE)
+
+ggplot(age_summary, aes(x = age_group)) +
+  
+  # Bar chart for the number of admissions (uses the primary y-axis on the left)
+  geom_bar(aes(y = Admissions), stat = "identity", fill = "steelblue", alpha = 0.7) +
+  
+  # Line chart for the Case Fatality Rate (uses the rescaled data)
+  geom_line(aes(y = CFR_percent * scaling_factor, group = 1), color = "firebrick", size = 1.5) +
+  
+  # Add points and text labels to the line chart for clarity
+  geom_point(aes(y = CFR_percent * scaling_factor), color = "firebrick", size = 3) +
+  geom_text(
+    aes(y = CFR_percent * scaling_factor, label = sprintf("%.2f%%", CFR_percent)),
+    vjust = -0.75, # Adjust vertical position to be above the point
+    color = "firebrick",
+    size = 4
+  ) +
+  
+  # Create the secondary y-axis (on the right) for the CFR
+  scale_y_continuous(
+    # Features for the primary y-axis (Admissions)
+    name = "Number of Admissions",
+    labels = comma,
+    
+    # Features for the secondary y-axis (CFR)
+    sec.axis = sec_axis(
+      ~ . / scaling_factor, # Rescale the labels back to the original CFR percentage values
+      name = "Case Fatality Rate (%)"
+    )
+  ) +
+  
+  # Labels and Theming
+  labs(
+    title = "Admissions and Case Fatality Rate by Age Group",
+    x = "Age Group",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title.y.right = element_text(color = "firebrick"),
+    axis.text.y.right = element_text(color = "firebrick"),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
+```{r}
+# --- Calculate Admissions, Deaths, and CFR by Age Group ---
+age_summary_table <- data %>%
+  group_by(age_group) %>%
+  summarise(
+    Admissions = n(),
+    Total_Deaths = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    CFR_Percent = (Total_Deaths / Admissions) * 100
+  ) %>%
+  # Arrange by age group for a clean presentation
+  arrange(age_group)
+
+# --- Display the final table ---
+print(age_summary_table)
+```
+
+
+# Gender
+
+```{r}
+# `sex == 1` is male and `sex == 2` is female
+data <- data %>%
+  mutate(sex_label = case_when(
+    sex == 1 ~ "Male",
+    sex == 2 ~ "Female",
+    TRUE ~ "Unknown"
+  ))
+
+# Calculate male-to-female ratio
+sex_ratio <- data %>%
+  filter(sex_label %in% c("Male", "Female")) %>%
+  count(sex_label) %>%
+  summarise(
+    Female_to_Male_Ratio = n[sex_label == "Female"] / n[sex_label == "Male"]
+  )
+
+# Calculate the median age
+median_age <- median(data$age_y, na.rm = TRUE)
+# Calculate quantiles for age_y
+age_quantiles <- quantile(data$age_y, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE)
+
+# Print the results
+print(paste("Female-to-Male Ratio:", round(sex_ratio$Female_to_Male_Ratio, 2)))
+print(paste("Median Age:", median_age))
+print(age_quantiles)
+```
+
+```{r}
+# Total number of records
+total_count <- nrow(data)
+
+# Count females and calculate percentage
+female_count <- data %>%
+  filter(sex_label == "Female") %>%
+  count()
+
+female_percentage <- (female_count$n / total_count) * 100
+
+# Count patients under 5 years old and calculate percentage
+under_5_count <- data %>%
+  filter(age_y < 5) %>%
+  count()
+
+under_5_percentage <- (under_5_count$n / total_count) * 100
+
+# Print results
+print(paste("Number of Females:", female_count$n))
+print(paste("Percentage of Females:", round(female_percentage, 2), "%"))
+print(paste("Number of Patients < 5 years old:", under_5_count$n))
+print(paste("Percentage of Patients < 5 years old:", round(under_5_percentage, 2), "%"))
+```
+
+# Region
+
+```{r}
+# Calculate frequency of rgn1
+rgn1_frequency <- data %>%
+  count(rgn1, name = "Frequency") %>%
+  arrange(desc(Frequency))  # Sort by frequency in descending order
+
+rgn1_frequency
+```
+
+
+```{r}
+# Plot the bar chart
+ggplot(rgn1_frequency, aes(x = factor(rgn1), y = Frequency, fill = factor(rgn1))) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Number of admitted cases by health region",
+    x = "Region",
+    y = "Number of Cases"
+  ) +
+  # scale_fill_brewer(palette = "viridis") +  # Use a colorful palette
+  scale_color_viridis(option = "D") +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",  # Remove legend if region numbers are self-explanatory
+    # axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels if needed
+  )
+```
+
+```{r}
+data[data$rgn1 == 6,]
+```
+
+```{r}
+pcode <- read.csv("province_code.csv", encoding = "UTF-8", stringsAsFactors = FALSE)
+pcode
+```
+
+```{r}
+# Create the region column based on the TH_name column
+pcode <- pcode %>%
+  mutate(region = case_when(
+    # Northern: 9 provinces
+    TH_name %in% c("เชียงราย", "น่าน", "พะเยา", "เชียงใหม่", "แม่ฮ่องสอน", "แพร่", "ลำปาง", "ลำพูน", "อุตรดิตถ์") ~ "Northern",
+    
+    # Central: Bangkok plus 21 provinces
+    TH_name %in% c("กรุงเทพมหานคร", "พิษณุโลก", "สุโขทัย", "เพชรบูรณ์", "พิจิตร", "กำแพงเพชร", "นครสวรรค์", "ลพบุรี",
+                   "ชัยนาท", "อุทัยธานี", "สิงห์บุรี", "อ่างทอง", "สระบุรี", "พระนครศรีอยุธยา", "สุพรรณบุรี",
+                   "นครนายก", "ปทุมธานี", "นนทบุรี", "นครปฐม", "สมุทรปราการ", "สมุทรสาคร", "สมุทรสงคราม") ~ "Central",
+    
+    # Northeastern: 19 provinces + บึงกาฬ
+    TH_name %in% c("หนองคาย", "นครพนม", "สกลนคร", "อุดรธานี", "หนองบัวลำภู", "เลย", "มุกดาหาร", "กาฬสินธุ์",
+                   "ขอนแก่น", "อำนาจเจริญ", "ยโสธร", "ร้อยเอ็ด", "มหาสารคาม", "ชัยภูมิ", "นครราชสีมา",
+                   "บุรีรัมย์", "สุรินทร์", "ศรีสะเกษ", "อุบลราชธานี", "บึงกาฬ") ~ "Northeastern",
+    
+    # Eastern: 7 provinces
+    TH_name %in% c("สระแก้ว", "ปราจีนบุรี", "ฉะเชิงเทรา", "ชลบุรี", "ระยอง", "จันทบุรี", "ตราด") ~ "Eastern",
+    
+    # Western: 5 provinces
+    TH_name %in% c("ตาก", "กาญจนบุรี", "ราชบุรี", "เพชรบุรี", "ประจวบคีรีขันธ์") ~ "Western",
+    
+    # Southern: 14 provinces
+    TH_name %in% c("ชุมพร", "ระนอง", "สุราษฎร์ธานี", "นครศรีธรรมราช", "กระบี่", "พังงา", "ภูเก็ต", "พัทลุง",
+                   "ตรัง", "ปัตตานี", "สงขลา", "สตูล", "นราธิวาส", "ยะลา", "เบตง") ~ "Southern",
+    
+    TRUE ~ NA_character_
+  ))
+pcode
+```
+
+
+```{r}
+# In data, extract the first two characters from prov1 and convert to integer
+data <- data %>%
+  mutate(prov1_code = as.integer(substr(prov1, 1, 2)))
+
+# Join data with pcode by matching data$prov1_code to pcode$prov_code,
+# and then set data$region to the combined value from pcode
+data <- data %>%
+  left_join(pcode %>% select(prov_code, region),
+            by = c("prov1_code" = "prov_code")) %>%
+  select(-prov1_code)
+
+```
+
+```{r}
+data[is.na(data$region), ]
+```
+
+
+```{r}
+# data <- subset(data, select = -c(region.y))
+# colnames(data)[which(names(data) == "region.x")] <- "region"
+# data
+```
+
+
+```{r}
+region_frequency <- data %>%
+  count(region, name = "Frequency") %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1)) %>%
+  arrange(desc(Frequency))
+region_frequency
+```
+
+
+
+```{r}
+# Define custom color palette matching the image
+region_colors <- c(
+  "Northern" = "#1f4e79",         # Dark Blue
+  "Northeastern" = "#ffeb3b",     # Yellow
+  "Central" = "#4caf50",          # Green
+  "Eastern" = "#e91e63",          # Pink
+  "Western" = "#03a9f4",          # Teal/Cyan
+  "Southern" = "#ff9800"          # Orange
+)
+
+# Plot with manual color scale
+ggplot(region_frequency, aes(x = reorder(region, -Frequency), y = Frequency, fill = region)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = region_colors) +
+  labs(
+    title = "Frequency of Admissions by Region",
+    x = "Region",
+    y = "Number of Cases"
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# Payment Scheme (maininscl)
+
+```{r}
+# Calculate the frequency of maininscl
+maininscl_frequency <- data %>%
+  count(maininscl, name = "Frequency") %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1)) %>%
+  arrange(desc(Frequency))
+
+# Display the frequency table
+maininscl_frequency
+
+# https://ucinfo.nhso.go.th/ucinfo/RptRegisPop-6
+# WEL สิทธิหลักประกันสุขภาพแห่งชาติ ประเภทมีสิทธิย่อย(WEL)
+# UCS สิทธิหลักประกันสุขภาพแห่งชาติ(UCS)
+# OFC สิทธิข้าราชการ/สิทธิรัฐวิสาหกิจ
+# LGO สิทธิสวัสดิการพนักงานส่วนท้องถิ่น
+# SSS สิทธิประกันสังคม
+# PUC=สปสช.ไมพบสิทธ
+
+```
+
+```{r}
+top6 <- head(maininscl_frequency, 6)
+
+# Plot using ggplot with the subset
+ggplot(top6, aes(x = reorder(maininscl, -Frequency), y = Frequency, fill = maininscl)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Frequency of Main Insurance Scheme (Top 6)",
+    x = "Insurance Scheme",
+    y = "Number of Cases"
+  ) +
+  # scale_fill_brewer(palette = "Set3") +  # Optional: Colorful palette
+  scale_color_viridis(option = "A") +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",  # Remove legend (color already represents insurance types)
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for readability
+  )
+
+# https://ucinfo.nhso.go.th/ucinfo/RptRegisPop-6
+# WEL สิทธิหลักประกันสุขภาพแห่งชาติ ประเภทมีสิทธิย่อย(WEL)
+# UCS สิทธิหลักประกันสุขภาพแห่งชาติ(UCS)
+# OFC สิทธิข้าราชการ/สิทธิรัฐวิสาหกิจ
+# LGO สิทธิสวัสดิการพนักงานส่วนท้องถิ่น
+# SSS สิทธิประกันสังคม
+# PUC=สปสช.ไมพบสิทธ
+```
+
+```{r}
+data <- data %>%
+  mutate(
+    maininscl_group = case_when(
+      maininscl %in% c("WEL", "UCS") ~ "UCS",
+      maininscl %in% c("OFC", "LGO") ~ "Officer",
+      TRUE ~ "Other"
+    )
+  )
+```
+
+```{r}
+maininscl_group_summary <- data %>%
+  count(maininscl_group, name = "Frequency") %>%
+  mutate(
+    Percentage = round(Frequency / sum(Frequency) * 100, 1)
+  ) %>%
+  arrange(desc(Frequency))
+
+maininscl_group_summary
+```
+
+
+# Diag code
+
+```{r}
+# Remove leading/trailing spaces
+data$pdx_dx <- trimws(data$pdx_dx)
+
+# Convert the table to a data frame
+frequency_df <- as.data.frame(table(data$pdx_dx))
+
+# Rename columns for clarity
+colnames(frequency_df) <- c("ICD10", "Frequency")
+
+# Order the data frame by frequency in descending order
+frequency_df <- frequency_df[order(-frequency_df$Frequency), ]
+frequency_df
+```
+
+
+
+```{r}
+# Merge the datasets based on ICD10 code
+freq_data <- frequency_df %>%
+  left_join(icd10_terms, by = "ICD10")
+
+# Add percentage column after merging
+freq_data <- freq_data %>%
+  mutate(Percentage = round((Frequency / sum(Frequency)) * 100, 1))
+
+freq_data
+```
+
+
+```{r}
+write.csv(freq_data, "ICD10_frequency.csv")
+```
+
+
+```{r}
+freq_data_top20 <- head(freq_data[order(-freq_data$Frequency), ], 20)
+# Create a bar plot for the top 20 ICD-10 codes
+ggplot(freq_data_top20, aes(x = reorder(ICD10, -Frequency), y = Frequency)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(
+    title = "Top 20 ICD-10 Codes by Frequency",
+    x = "ICD-10 Code",
+    y = "Frequency"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+data
+```
+
+
+```{r}
+data <- data %>%
+  mutate(
+    pdx_dx_label = case_when(
+      pdx_dx %in% c("A099", "A090", "A084", "A059", "A049", "K529", "B084") ~ pdx_dx,
+      TRUE ~ "Others"
+    ),
+    pdx_dx_label = factor(
+      pdx_dx_label,
+      levels = c(
+        "Others", "B084", "K529", "A049", "A059", "A084", "A090", "A099"
+      )
+    )
+  )
+
+# Update color palette to match ICD-10 labels
+color_palette <- c(
+  "B084" = "darkgreen",  
+  "A084" = "#1f78b4",         
+  "A090" = "#D98324",  
+  "A049" = "#fcae91",     
+  "A059" = "#fb6a4a",   
+  "K529" = "#ffff99", 
+  "A099" = "#FEC260",
+  "Others" = "#969696"
+)
+
+# Group and plot
+age_group_pdx_counts <- data %>%
+  group_by(age_group, pdx_dx_label) %>%
+  summarise(Admissions = n(), .groups = "drop") %>%
+  mutate(
+    age_group = factor(age_group, levels = c("< 5", "5-18", "18-40", "40-60", "> 60", "Unknown")))
+  )
+
+ggplot(age_group_pdx_counts, aes(x = age_group, y = Admissions, fill = pdx_dx_label)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = color_palette, name = "ICD-10 Code") +
+  labs(
+    # title = "Admissions by Age Group and ICD-10 Diagnosis",
+    x = "Age Group",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_y_continuous(labels = comma)
+
+```
+
+# Specific disease
+```{r}
+table(data$dx_type)
+```
+
+```{r}
+specific <- data[data$dx_type == 'specific_dx', ] 
+
+# Convert the table to a data frame
+specific <- as.data.frame(table(specific$pdx_dx))
+
+# Rename columns for clarity
+colnames(specific) <- c("ICD10", "Frequency")
+
+# Order the data frame by frequency in descending order
+specific <- specific[order(-specific$Frequency), ]
+specific
+```
+
+
+```{r}
+# Merge the datasets based on ICD10 code
+specific <- specific %>%
+  left_join(icd10_terms, by = "ICD10")
+
+# Add percentage column after merging
+specific <- specific %>%
+  mutate(Percentage = round((Frequency / nrow(data)) * 100, 1))
+
+specific <- specific[, c("ICD10", "Definition", "Frequency", "Percentage")]
+specific
+```
+
+
+```{r}
+# write_csv(specific, "specific_ICD.csv")
+```
+
+```{r}
+pathogen_map <- specific %>%                # icd_raw has ICD10 + Definition
+  transmute(
+    ICD10,
+    pathogen = case_when(
+      str_detect(ICD10, "^A00")                              ~ "Cholera",
+      str_detect(ICD10, "^A01")                              ~ "Typhoid & Paratyphoid",
+      str_detect(ICD10, "^A02")                              ~ "Salmonella (non-typhoidal)",
+      str_detect(ICD10, "^A03")                              ~ "Shigellosis",
+      str_detect(ICD10, "^A04[0-4]")                         ~ "E. coli infection",
+      str_detect(Definition, regex("Amoeb", TRUE))           ~ "Amoeba (Entamoeba)",
+      str_detect(Definition, regex("Salmonella|Typhoid", TRUE)) ~ "Salmonella spp.",
+      str_detect(Definition, regex("Escherichia coli|E\\.? ?coli", TRUE)) ~ "E. coli",
+      str_detect(Definition, regex("Shigella", TRUE))        ~ "Shigella spp.",
+      str_detect(Definition, regex("Campylobacter", TRUE))   ~ "Campylobacter spp.",
+      str_detect(Definition, regex("Clostridium difficile", TRUE)) ~ "C. difficile",
+      str_detect(Definition, regex("Rotavir", TRUE))       ~ "Rotavirus",
+      str_detect(Definition, regex("Norovir", TRUE))       ~ "Norovirus ",
+      str_detect(Definition, regex("strongyloid", TRUE))     ~ "Strongyloid", 
+      TRUE                                                   ~ Definition
+    )
+  )
+
+pathogen_map
+```
+
+```{r}
+write_csv(pathogen_map, "pathogen_map_1.csv")
+```
+
+```{r}
+data <- data %>%
+  left_join(pathogen_map, by = c("pdx_dx" = "ICD10"))
+data
+```
+
+```{r}
+data %>%
+  count(pathogen) %>%
+  mutate(percent = round(n / sum(n) * 100, 1)) %>%
+  arrange(desc(n))
+```
+
+
+
+
+```{r}
+# Load mapping
+mapping <- read.csv("output/pathogen_mapping.csv", row.names = 1)
+
+# Recode using the mapping
+data$spec_pathogen <- mapping[as.character(data$pathogen), "Group"]
+
+# Assuming `spec_pathogen` already exists from your mapping
+data <- data %>%
+  mutate(
+    spec_pathogen = if_else(
+      spec_pathogen %in% c("Other/Unclassified", "Unspecified gastroenteritis"),
+       "Unspecific",
+      spec_pathogen
+    )
+  )
+```
+
+```{r}
+data <- data %>%
+  mutate(
+    spec_pathogen = if_else(is.na(spec_pathogen), "Unspecific", spec_pathogen)
+  )
+```
+
+
+```{r}
+pathogen_freq <- data %>%
+  # filter(!is.na(spec_pathogen)) %>%    # ❗️ Remove NA rows
+  count(spec_pathogen, sort = TRUE) %>%
+  mutate(
+    percent = round(n / sum(n) * 100, 1),
+    Admission = paste0(comma(n), " (", percent, "%)")
+  ) %>%
+  rename(Pathogen = spec_pathogen) %>%
+  select(Pathogen, Admission)
+
+pathogen_freq
+```
+
+```{r}
+data %>%
+  filter(is.na(spec_pathogen)) %>%
+  count(pdx_dx, sort = TRUE)
+```
+
+
+```{r}
+# # Load the ICD-10 mapping file
+# icd10_map <- read_csv("output/ICD10_Codes_by_Pathogen.csv")
+# 
+# # Merge into the frequency table
+# pathogen_freq <- pathogen_freq %>%
+#   left_join(icd10_map, by = "Pathogen")  # Match by Pathogen name
+# 
+# # View the merged result
+# kable(pathogen_freq)
+```
+
+
+```{r}
+# 1. Define the target grouped pathogens you want to visualize
+target_pathogens <- c(
+  "Hand-Foot-Mouth Disease (HFMD)",
+  "Typhoid & Paratyphoid",
+  "Salmonella",
+  "Amoeba",
+  "Rotavirus",
+  "Strongyloides",
+  "E. coli",
+  "Hepatitis A",
+  "C. difficile",
+  "Ascariasis",
+  "V.parahaemolyticus",
+  "Cholera"
+)
+
+# 2. Prepare monthly counts and 3-month moving averages
+monthly_counts_final <- data %>%
+  filter(spec_pathogen %in% target_pathogens) %>%
+  group_by(dx_gYearMonth, spec_pathogen) %>%
+  summarise(Admissions = n(), .groups = 'drop') %>%
+  mutate(
+    YearMonthDate = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d")
+  ) %>%
+  group_by(spec_pathogen) %>%
+  arrange(YearMonthDate) %>%
+  mutate(
+    Admissions_MA = rollmean(Admissions, k = 3, fill = NA, align = "right")
+  ) %>%
+  ungroup() %>%
+  mutate(spec_pathogen = factor(spec_pathogen, levels = target_pathogens))
+
+# 3. Plot the time series with separate facets
+ggplot(monthly_counts_final, aes(x = YearMonthDate)) +
+  geom_line(aes(y = Admissions), color = "grey80", linewidth = 0.8) +
+  geom_line(aes(y = Admissions_MA), color = "firebrick", linewidth = 1.0) +
+  facet_wrap(~ spec_pathogen, scales = "free_y") +
+  scale_x_date(
+    date_labels = "%b-%Y",
+    date_breaks = "1 year"
+  ) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Monthly Admission Trends with 3-Month Moving Average",
+    subtitle = "Each chart shows smoothed admission trend by pathogen",
+    x = "Month-Year",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 9, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+
+```{r}
+data$pathogen_group <- NULL
+```
+
+
+```{r}
+data <- data %>%
+  mutate(
+    pathogen_group = case_when(
+      # Viral Pathogens
+      pathogen %in% c("Rotavirus", "Adenoviral enteritis", "Acute gastroenteropathy due to Norwalk agent", 
+                      "Enterovirus infection, unspecified site", "Other viral enteritis", 
+                      "Enteroviral vesicular stomatitis with exanthem", "Hepatitis A","Hepatitis A without hepatic coma", "Hepatitis A with hepatic coma", "Enterovirus infection, unspecified site") ~ "Virus",
+
+      # Bacterial & Toxin Pathogens
+      pathogen %in% c("Typhoid & Paratyphoid", "Salmonella (non-typhoidal)", "E. coli infection", 
+                      "E. coli", "Shigellosis", "Cholera", "Enteritis due to Yersinia enterocolitica", 
+                      "Botulism", "Campylobacter spp.", "Foodborne staphylococcal intoxication", 
+                      "Foodborne Vibrio parahaemolyticus intoxication", "Foodborne Bacillus cereus intoxication",
+                      "Foodborne Clostridium perfringens [Clostridium welchii] intoxication", 
+                      "C. difficile") ~ "Bacteria / Toxin",
+      
+      # Protozoan Pathogens
+      pathogen %in% c("Amoeba (Entamoeba)", "Giardiasis [lambliasis]", "Cryptosporidiosis", 
+                      "Balantidiasis", "Isosporiasis", "Other specified protozoal intestinal diseases",
+                      "Protozoal intestinal disease, unspecified") ~ "Protozoa",
+      
+      # Helminth Pathogens
+      pathogen %in% c("Ascariasis", "Ascariasis unspecified", "Ascariasis with other complications", 
+                      "Ascariasis with intestinal complications", "Strongyloid", "Trichuriasis", 
+                      "Trichostrongyliasis", "Intestinal capillariasis", "Intestinal angiostrongyliasis", 
+                      "Anisakiasis", "Intestinal helminthiasis, unspecified", 
+                      "Intestinal parasitism, unspecified", "Intestinal parasitism, unspecified") ~ "Helminth",
+      
+      # Non-infectious / Other
+      pathogen %in% c( "Allergic and dietetic gastroenteritis and colitis, unspecified", "Allergic|cow.s milk protein",
+                       "Other allergic and dietetic gastroenteritis and colitis", "Allergic and dietetic gastroenteritis and colitis due to cow’s milk protein", "Allergic and dietetic gastroenteritis and colitis due to cow\x92s milk protein" ) ~ "Allergy",
+      
+      # Default catch-all (should capture very few, if any)
+      TRUE ~ "Unspecific"
+    )
+  )
+
+# Verify the new comprehensive groups with a frequency table
+print( count(data, pathogen_group, sort = TRUE) )
+```
+
+```{r}
+data %>%
+  # Keep only rows where the group is "Unspecific" or "Uncategorized"
+  filter(pathogen_group %in% c("Unspecific")) %>%
+  
+  # Select only the relevant columns
+  select(pathogen, pathogen_group) %>%
+  
+  # Show only the unique combinations
+  distinct()
+```
+
+```{r}
+data <- data %>%
+  mutate(
+    pathogen_group = if_else(
+      pathogen == "Enterovirus  infection, unspecified site", 
+      "Virus", 
+      pathogen_group
+    )
+  )
+
+data <- data %>%
+  mutate(
+    pathogen_group = if_else(
+      is.na(pathogen), "Unspecific", 
+      pathogen_group
+    )
+  )
+```
+
+```{r}
+# Verify the new comprehensive groups with a frequency table
+print( count(data, pathogen_group, sort = TRUE) )
+```
+
+
+```{r}
+# STEP 1: Prepare monthly summary by pathogen_group
+monthly_group_counts <- data %>%
+  filter(!is.na(pathogen_group), !is.na(dx_gYearMonth)) %>%
+  group_by(dx_gYearMonth, pathogen_group) %>%
+  summarise(Admissions = n(), .groups = "drop") %>%
+  mutate(
+    YearMonthDate = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d")
+  ) %>%
+  group_by(pathogen_group) %>%
+  arrange(YearMonthDate) %>%
+  mutate(
+    Admissions_MA = rollmean(Admissions, k = 3, fill = NA, align = "right")
+  ) %>%
+  ungroup()
+
+# STEP 2: Plot faceted chart
+ggplot(monthly_group_counts, aes(x = YearMonthDate)) +
+  geom_line(aes(y = Admissions), color = "grey80", linewidth = 0.8) +
+  geom_line(aes(y = Admissions_MA), color = "firebrick", linewidth = 1.1) +
+  facet_wrap(~ pathogen_group, scales = "free_y") +
+  scale_x_date(
+    date_labels = "%b-%Y",
+    date_breaks = "1 year"
+  ) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Monthly Admissions by Pathogen Group",
+    subtitle = "With 3-Month Moving Average (Red)",
+    x = "Month-Year",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+
+
+# LOS
+
+```{r}
+# Calculate overall LOS statistics including Standard Deviation
+overall_los_statistics <- data %>%
+  summarise(
+    Mean_LOS = mean(los, na.rm = TRUE),
+    SD_LOS = sd(los, na.rm = TRUE),  # Standard deviation
+    Median_LOS = median(los, na.rm = TRUE),
+    Q1 = quantile(los, 0.25, na.rm = TRUE),  # 25th percentile
+    Q3 = quantile(los, 0.75, na.rm = TRUE),  # 75th percentile
+    Min_los = min(los, na.rm = TRUE),
+    Max_los = max(los, na.rm = TRUE)
+  )
+
+overall_los_statistics
+```
+
+
+
+```{r}
+# Histogram of amount with x-axis limit
+ggplot(data, aes(x = los)) +
+  # Manually define bin breaks so 0 falls in its own bin
+  geom_histogram(
+    breaks = seq(-0.5, 15.5, by = 1), 
+    fill = "steelblue", color = "black", alpha = 0.7, 
+    closed = "right"
+  ) +
+  labs(
+    title = "Distribution of LOS (Up to 15 days)",
+    x = "LOS (Day)",
+    y = "Frequency"
+  ) +
+  # Ensure x-axis shows integers 0 through 15
+  scale_x_continuous(breaks = -1:15, limits = c(-1, 15)) +
+  # Format y-axis labels with commas
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+```
+
+
+```{r}
+# Calculate total admissions
+total_admissions <- nrow(data)
+
+# Count patients with LOS > 3 days
+los_above_3_days <- data %>%
+  filter(los > 3) %>%
+  count()
+
+# Calculate percentage
+percentage_los_above_3 <- (los_above_3_days$n / total_admissions) * 100
+percentage_los_above_3
+```
+
+
+
+```{r}
+# Calculate LOS statistics (e.g., mean, median, min, max) grouped by ICD-10 codes
+los_by_icd10 <- data %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    Mean_LOS = mean(los, na.rm = TRUE),
+    SD_LOS = sd(los, na.rm = TRUE),       
+    Median_LOS = median(los, na.rm = TRUE),
+    Min_LOS = min(los, na.rm = TRUE),
+    Max_LOS = max(los, na.rm = TRUE),
+    Count = n()
+  ) %>%
+  arrange(desc(Count))  # Arrange by frequency of ICD-10 codes
+
+# Append the additional definition to the ICD-10 terms
+los_by_icd10 <- los_by_icd10 %>%
+  rename(ICD10 = pdx_dx)
+
+# Merge the datasets based on ICD10 code
+los_by_icd10 <- los_by_icd10 %>%
+  left_join(icd10_terms, by = "ICD10")
+
+# Rearrange columns so "ICD10" and "Definition" are first
+los_by_icd10 <- los_by_icd10 %>%
+  select(ICD10, Definition, everything())
+
+los_by_icd10
+```
+
+```{r}
+# Filter the top 20 ICD-10 codes by count
+top20_los_by_icd10 <- los_by_icd10 %>%
+  slice_max(Count, n = 20) %>% # Select top 20 rows based on Count
+  arrange(desc(Mean_LOS)) 
+
+top20_los_by_icd10
+```
+
+```{r}
+# Create a horizontal bar chartS
+ggplot(top20_los_by_icd10, aes(x = reorder(ICD10, Mean_LOS), y = Mean_LOS)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  coord_flip() +  # Flip coordinates for a horizontal bar chart
+  labs(
+    title = "Top 20 ICD-10 Codes by Mean Length of Stay (LOS)",
+    x = "ICD-10 Code",
+    y = "Mean LOS (Days)"
+  ) +
+  theme_minimal()
+```
+
+
+# Cost
+
+```{r}
+# Sys.setlocale("LC_ALL","English")
+# Calculate the sum of `amount` grouped by `pdx_dx`
+sum_by_pdx <- data %>%
+  group_by(pdx_dx) %>%
+  summarise(Total_Amount = sum(amount, na.rm = TRUE)) %>%
+  arrange(desc(Total_Amount)) %>%
+  rename(ICD10 = pdx_dx) %>%
+  left_join(icd10_terms, by = "ICD10") %>%
+  # Convert to Million Baht (MTHB) and format with commas
+  mutate(Total_Amount = paste0(comma(round(Total_Amount / 1e6, 0)), " MTHB"))
+
+# options(scipen = 999)  # Turn off scientific notation
+sum_by_pdx
+```
+
+```{r}
+# Calculate Mean and Standard Deviation of amount
+amount_statistics <- data %>%
+  summarise(
+    Mean_Amount = mean(amount, na.rm = TRUE),
+    SD_Amount = sd(amount, na.rm = TRUE),
+    Median_Amount = median(amount, na.rm = TRUE),
+    Q1 = quantile(amount, 0.25, na.rm = TRUE),  # 25th percentile
+    Q3 = quantile(amount, 0.75, na.rm = TRUE),  # 75th percentile
+    Min_Amount = min(amount, na.rm = TRUE),
+    Max_Amount = max(amount, na.rm = TRUE)
+  )
+
+# View the results
+amount_statistics
+```
+
+```{r}
+# Calculate statistics for 'amount', grouped by 'hosLevel'
+amount_statistics_by_hoslevel <- data %>%
+  group_by(hosLevel) %>%  # This is the line that was added
+  summarise(
+    Mean_Amount = mean(amount, na.rm = TRUE),
+    SD_Amount = sd(amount, na.rm = TRUE),
+    # Median_Amount = median(amount, na.rm = TRUE),
+    # Q1 = quantile(amount, 0.25, na.rm = TRUE),  # 25th percentile
+    # Q3 = quantile(amount, 0.75, na.rm = TRUE),  # 75th percentile
+    Min_Amount = min(amount, na.rm = TRUE),
+    Max_Amount = max(amount, na.rm = TRUE),
+    Count = n(),
+    Total_Amount = sum(amount, na.rm = TRUE),
+  ) %>%
+  mutate(
+    Total_Amount_MTHB = paste0(comma(round(Total_Amount / 1e6, 2)), " MTHB")
+  ) %>%
+  arrange(desc(Total_Amount))
+
+# View the results
+amount_statistics_by_hoslevel
+```
+
+```{r}
+# Calculate statistics for 'amount', grouped by 'hosLevel'
+amount_statistics_by_region <- data %>%
+  group_by(region) %>%  # This is the line that was added
+  summarise(
+    Mean_Amount = mean(amount, na.rm = TRUE),
+    SD_Amount = sd(amount, na.rm = TRUE),
+    # Median_Amount = median(amount, na.rm = TRUE),
+    # Q1 = quantile(amount, 0.25, na.rm = TRUE),  # 25th percentile
+    # Q3 = quantile(amount, 0.75, na.rm = TRUE),  # 75th percentile
+    Min_Amount = min(amount, na.rm = TRUE),
+    Max_Amount = max(amount, na.rm = TRUE),
+    Count = n(),
+    Total_Amount = sum(amount, na.rm = TRUE),
+  ) %>%
+  mutate(
+    Total_Amount_MTHB = paste0(comma(round(Total_Amount / 1e6, 2)), " MTHB")
+  ) %>%
+  arrange(desc(Total_Amount))
+
+# View the results
+amount_statistics_by_region
+```
+
+```{r}
+# Histogram of amount with x-axis limit
+ggplot(data, aes(x = amount)) +
+  geom_histogram(binwidth = 1000, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Amount (Up to 20,000)",
+    x = "Amount",
+    y = "Frequency"
+  ) +
+  xlim(0, 20000) +  # Set x-axis limit
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+
+```
+
+
+```{r}
+mean_amount_by_dx <- data %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    Mean_Amount = mean(amount, na.rm = TRUE),
+    # SD_Amount = sd(amount, na.rm = TRUE),     
+    Count = n(),
+    Total_Amount = paste0(round(Mean_Amount*Count / 1e6, 1), " MTHB")
+  ) %>%
+  arrange(desc(Mean_Amount))
+
+names(mean_amount_by_dx)[1] <- "ICD10"
+
+# Merge the datasets based on ICD10 code
+mean_amount_by_dx <- mean_amount_by_dx %>%
+  left_join(icd10_terms, by = "ICD10")
+
+mean_amount_by_dx
+```
+
+
+```{r}
+sum_amount_by_dx <- data %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    Total_Amount = sum(amount, na.rm = TRUE),
+    Count = n()
+  ) %>%
+  arrange(desc(Total_Amount)) %>%
+  rename(ICD10 = pdx_dx) %>%
+  left_join(icd10_terms, by = "ICD10") %>%
+  select(ICD10, Definition, everything())
+
+sum_amount_by_dx
+```
+
+```{r}
+data %>%
+  filter(rw != adjrw) %>%
+  select(rw, adjrw)
+```
+
+
+```{r}
+# Calculate total amount and total admissions by diagnosis year
+sum_by_year <- data %>%
+  group_by(dx_gyear) %>%
+  summarise(
+    Total_Amount = sum(amount, na.rm = TRUE),
+    Total_Admission = n(),
+    Median_Amount = median(amount, na.rm = TRUE),
+    Mean_Amount = mean(amount, na.rm = TRUE),
+    Median_RW = median(rw, na.rm = TRUE),
+    Mean_RW = mean(rw, na.rm = TRUE),
+    Median_ADJRW = median(adjrw, na.rm = TRUE),
+    Mean_ADJRW = mean(adjrw, na.rm = TRUE),
+  ) %>%
+  arrange(dx_gyear)
+
+sum_by_year
+```
+
+```{r}
+cost_covid <- data %>%
+  mutate(period = case_when(
+    dx_gyear >= 2014 & dx_gyear <= 2019 ~ "2014–2019",
+    dx_gyear >= 2020 & dx_gyear <= 2022 ~ "2020–2022",
+    TRUE ~ NA_character_
+  )) %>%
+  filter(!is.na(period)) %>%
+  group_by(period) %>%
+  summarise(
+    mean_cost = mean(amount, na.rm = TRUE),
+    sd_cost   = sd(amount, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cost_covid
+```
+
+
+```{r}
+# Rescale Admissions to match Total_Amount range (for plotting)
+max_amount <- max(sum_by_year$Total_Amount)
+max_med <- max(sum_by_year$Mean_Amount)
+sum_by_year$Admissions_scaled <- sum_by_year$Mean_Amount * (max_amount / max_med)
+
+ggplot(sum_by_year, aes(x = factor(dx_gyear))) +
+  geom_bar(aes(y = Total_Amount), stat = "identity", fill = "gold") +
+  geom_line(aes(y = Admissions_scaled, group = 1), color = "steelblue", size = 1.2) +
+  geom_point(aes(y = Admissions_scaled), color = "steelblue", size = 2) +
+  scale_y_continuous(
+    labels = comma,
+    name = "Total Cost (Baht)",
+    sec.axis = sec_axis(~ . * (max_med / max_amount), name = "Mean Cost", labels = comma)
+  ) +
+  labs(
+    title = "Mean Cost and Total Cost by Year",
+    x = "Year of Diagnosis"
+  ) +
+  theme_minimal() +
+  theme(
+    # axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.y.right = element_text(color = "steelblue"),
+    axis.text.y.right = element_text(color = "steelblue")
+  )
+```
+
+```{r}
+# Step 2: Reshape to long format for plotting
+rw_long <- sum_by_year %>%
+  select(dx_gyear, Median_RW, Mean_RW) %>%
+  pivot_longer(cols = c(Median_RW, Mean_RW), names_to = "RW_Type", values_to = "RW_Value")
+
+# Step 3: Plot
+ggplot(rw_long, aes(x = factor(dx_gyear), y = RW_Value, color = RW_Type, group = RW_Type)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Median and Mean RW by Year",
+    x = "Year of Diagnosis",
+    y = "Relative Weight (RW)",
+    color = "RW Type"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# Adjust Relative Weight
+
+```{r}
+data %>%
+  summarise(
+    Mean_adjrw = mean(adjrw, na.rm = TRUE),
+    SD_adjrw = sd(adjrw, na.rm = TRUE)
+  )
+```
+
+```{r}
+# Histogram of amount with x-axis limit
+ggplot(data, aes(x = adjrw)) +
+  geom_histogram(binwidth = 0.1, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Adjust Relative Weight",
+    x = "Adjust Relative Weight",
+    y = "Frequency"
+  ) +
+  xlim(0, 5) +  # Set x-axis limit
+  scale_y_continuous(labels = comma) +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Step 2: Reshape to long format for plotting
+rw_long <- sum_by_year %>%
+  select(dx_gyear, Median_ADJRW, Mean_ADJRW) %>%
+  pivot_longer(cols = c(Median_ADJRW, Mean_ADJRW), names_to = "ADJRW_Type", values_to = "ADJRW_Value")
+
+# Step 3: Plot
+ggplot(rw_long, aes(x = factor(dx_gyear), y = ADJRW_Value, color = ADJRW_Type, group = ADJRW_Type)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Median and Mean ADJRW by Year",
+    x = "Year of Diagnosis",
+    y = "Adjusted Relative Weight (ADJRW)",
+    color = "ADJRW Type"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+ggplot(data, aes(x = factor(dx_gyear), y = adjrw)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Distribution of Adjusted Relative Weight (ADJRW) by Year",
+    x = "Year of Diagnosis",
+    y = "ADJRW"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+mean_amount_by_dx <- data %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    Mean_Amount = mean(amount, na.rm = TRUE),
+    Count = n()
+  ) %>%
+  arrange(desc(Mean_Amount)) 
+
+# Join by pdx_dx = ICD10
+mean_amount_with_def <- mean_amount_by_dx %>%
+  left_join(icd10_terms, by = c("pdx_dx" = "ICD10"))
+
+mean_amount_by_dx
+```
+
+
+```{r}
+los_by_year <- data %>%
+  group_by(dx_gyear) %>%
+  summarise(Mean_LOS = mean(los, na.rm = TRUE)) %>%
+  arrange(dx_gyear)
+
+ggplot(los_by_year, aes(x = factor(dx_gyear), y = Mean_LOS, group = 1)) +
+  geom_line(color = "tomato", size = 1.2) +
+  geom_point(color = "tomato", size = 3) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Mean Length of Stay by Year",
+    x = "Year of Diagnosis",
+    y = "Mean LOS (days)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+amount_over_10k_by_year <- data %>%
+  group_by(dx_gyear) %>%
+  summarise(
+    Total = n(),
+    Over_10000 = sum(amount > 10000, na.rm = TRUE),
+    Percentage = round((Over_10000 / Total) * 100, 1)
+  ) %>%
+  arrange(dx_gyear)
+amount_over_10k_by_year
+```
+
+```{r}
+ggplot(amount_over_10k_by_year, aes(x = factor(dx_gyear), y = Percentage, group = 1)) +
+  geom_line(color = "gold", size = 1.2) +
+  geom_point(color = "gold", size = 3) +
+  labs(
+    title = "Percentage of Admissions with Cost > 10,000 by Year",
+    x = "Year of Diagnosis",
+    y = "Percentage (%)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+amount_over_20k_by_year <- data %>%
+  group_by(dx_gyear) %>%
+  summarise(
+    Total = n(),
+    Over_20000 = sum(amount > 20000, na.rm = TRUE),
+    Percentage = round((Over_20000 / Total) * 100, 1)
+  ) %>%
+  arrange(dx_gyear)
+
+amount_over_20k_by_year
+```
+
+
+```{r}
+adjrw_summary <- data %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    Median_adjrw = median(adjrw, na.rm = TRUE),
+    Mean_adjrw = mean(adjrw, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Median_adjrw))  # Optional: sort by median
+
+adjrw_summary
+```
+
+```{r}
+joined_data <- los_by_icd10 %>%
+  left_join(adjrw_summary, by = c("ICD10" = "pdx_dx"))
+joined_data
+```
+
+```{r}
+joined_data %>%
+  select(ICD10, Definition, Median_adjrw, Mean_adjrw)
+```
+
+
+# Diag by Year
+
+```{r}
+# Step 1: Count pdx_dx by year
+pdx_by_year <- data %>%
+  group_by(dx_gyear, pdx_dx) %>%
+  summarise(Admissions = n(), .groups = "drop")
+
+# Step 2: Define ICD-10 codes of interest
+top_pdx <- c("B084", "A084", "A090", "A049", "A059", "K529", "A099")
+
+# Step 3: Recode other codes as "Others"
+pdx_by_year <- pdx_by_year %>%
+  mutate(
+    pdx_dx_group = ifelse(pdx_dx %in% top_pdx, pdx_dx, "Others")
+  ) %>%
+  group_by(dx_gyear, pdx_dx_group) %>%
+  summarise(Admissions = sum(Admissions), .groups = "drop")
+
+pdx_by_year
+```
+
+
+```{r}
+# Step 4: Define color palette
+color_palette <- c(
+  "B084" = "darkgreen",  
+  "A084" = "#1f78b4",         
+  "A090" = "#D98324",  
+  "A049" = "#fcae91",     
+  "A059" = "#fb6a4a",   
+  "K529" = "#ffff99", 
+  "A099" = "#FEC260",
+  "Others" = "#bdbdbd"  # gray shade
+)
+
+# Step 5: Plot stacked bar chart
+ggplot(pdx_by_year, aes(x = factor(dx_gyear), y = Admissions, fill = pdx_dx_group)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = color_palette, name = "ICD-10 Code") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Stacked Bar Chart of ICD-10 Diagnoses by Year",
+    x = "Year of Diagnosis",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  )
+```
+
+```{r}
+ggplot(pdx_by_year, aes(x = factor(dx_gyear), y = Admissions, fill = pdx_dx_group)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(
+    values = c(
+      "B084" = "darkgreen",  
+      "A084" = "#1f78b4",         
+      "A090" = "#D98324",  
+      "A049" = "#fcae91",     
+      "A059" = "#fb6a4a",   
+      "K529" = "#ffff99", 
+      "A099" = "#FEC260",
+      "Others" = "#bdbdbd"
+    ),
+    name = "ICD-10 Code"
+  ) +
+  labs(
+    title = "Proportion of Primary Diagnoses by Year",
+    x = "Year of Diagnosis",
+    y = "Proportion of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  )
+```
+
+
+```{r}
+# Step 1: Pivot to wide format (diagnosis as rows, year as columns)
+diagnosis_table <- pdx_by_year %>%
+  pivot_wider(
+    names_from = dx_gyear,
+    values_from = Admissions,
+    values_fill = 0
+  )
+
+diagnosis_percent <- diagnosis_table
+rownames(diagnosis_percent) <- diagnosis_percent$pdx_dx_group
+diagnosis_percent$pdx_dx_group <- NULL
+
+diagnosis_percent <- diagnosis_percent %>%
+  mutate(across(everything(), ~ .x / sum(.x))) %>%
+  round(3)
+
+# Step 3: Optional — round to 3 decimal places
+diagnosis_percent <- round(diagnosis_percent, 3)
+diagnosis_percent
+```
+
+
+```{r}
+# Step 1: Create contingency table (raw counts)
+diagnosis_table <- pdx_by_year %>%
+  pivot_wider(
+    names_from = dx_gyear,
+    values_from = Admissions,
+    values_fill = 0
+  )
+
+# Step 2: Convert to matrix and run chi-square test
+chisq_matrix <- as.matrix(diagnosis_table[,-1])
+rownames(chisq_matrix) <- diagnosis_table$pdx_dx_group
+
+chisq.test(chisq_matrix)
+```
+
+# Mid year pop
+
+```{r}
+# df <- read_csv("./data/pop/age_pop2014.csv", show_col_types = FALSE)
+# names(df)
+```
+
+
+```{r}
+# 1) List your yearly files
+files <- list.files(path = "./data/pop/", pattern = "^age_pop\\d{4}\\.csv$", full.names = TRUE)
+
+# 2) Helper: read one file, add year, normalize age, aggregate to 5 bands
+read_and_group <- function(f) {
+  yr <- readr::parse_number(basename(f))
+  read_csv(f, show_col_types = FALSE) %>%
+    # Adjust these names if your CSV uses different headers
+    rename(
+      age_raw   = age,
+      population = `sum`     # <-- backticks to avoid conflict with sum()
+    ) %>%
+    mutate(
+      # Make age numeric; handle "100+" etc.
+      age = as.numeric(str_extract(as.character(age_raw), "\\d+")),
+      age_group = case_when(
+        age < 5              ~ "< 5",
+        age >= 5  & age < 18 ~ "5-18",
+        age >= 18 & age < 40 ~ "18-40",
+        age >= 40 & age < 60 ~ "40-60",
+        age >= 60            ~ "> 60",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(age_group)) %>%
+    group_by(age_group) %>%
+    summarise(mid_pop = sum(population, na.rm = TRUE), .groups = "drop") %>%
+    mutate(year = yr)
+}
+
+# 3) Apply to all years and combine
+midyear_by_group <- map_dfr(files, read_and_group) %>%
+  mutate(age_group = factor(age_group, levels = c("< 5","5-18","18-40","40-60","> 60"))) %>%
+  arrange(.data$year, .data$age_group)  # <-- .data pronoun avoids function masking
+
+midyear_by_group
+```
+
+```{r}
+# write_csv(midyear_by_group, "output/mid_pop_age.csv")
+```
+
+
+# Admission year
+
+```{r}
+# Step 1: Count number of admissions per year
+yearly_counts <- data %>%
+  count(dx_gyear, name = "n_cases")  # dx_gyear = year of admission
+
+# Join population data with yearly case counts
+yearly_counts <- yearly_counts %>%
+  left_join(mid_pop, by = c("dx_gyear" = "year")) %>%
+  mutate(case_pop = (n_cases / `All age`) * 100000)
+
+yearly_counts
+```
+
+
+```{r}
+# Step 2: Create bar chart
+ggplot(yearly_counts, aes(x = factor(dx_gyear), y = n_cases)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(
+    title = "Yearly Number of Admitted Diarrheal Cases",
+    x = "Year of Admission",
+    y = "Number of Cases"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# First collapse population across all age groups for each year
+pop_all <- midyear_by_group %>%
+  group_by(year) %>%
+  summarise(total_pop = sum(mid_pop), .groups = "drop")
+
+# Merge and compute crude rate
+yearly_counts <- yearly_counts %>%
+  left_join(pop_all, by = c("dx_gyear" = "year")) %>%
+  mutate(crude_rate = (n_cases / total_pop) * 1e5)
+
+yearly_counts
+```
+
+# Age Standardized
+
+```{r}
+# WHO 2000–2025 standard population weights (per 1000) — your table
+who_5y <- tribble(
+  ~band,    ~low, ~high, ~w_per1000,
+  "0-4",      0,    4,    8.860,
+  "5-9",      5,    9,    8.690,
+  "10-14",   10,   14,    8.600,
+  "15-19",   15,   19,    8.470,
+  "20-24",   20,   24,    8.220,
+  "25-29",   25,   29,    7.930,
+  "30-34",   30,   34,    7.610,
+  "35-39",   35,   39,    7.150,
+  "40-44",   40,   44,    6.590,
+  "45-49",   45,   49,    6.040,
+  "50-54",   50,   54,    5.370,
+  "55-59",   55,   59,    4.550,
+  "60-64",   60,   64,    3.720,
+  "65-69",   65,   69,    2.960,
+  "70-74",   70,   74,    2.210,
+  "75-79",   75,   79,    1.520,
+  "80-84",   80,   84,    0.910,
+  "85-89",   85,   89,    0.440,
+  "90-94",   90,   94,    0.150,
+  "95-99",   95,   99,    0.040,
+  "100+",   100, Inf,     0.005
+)
+
+# total per-1000 (should be ~100.035)
+tot <- sum(who_5y$w_per1000)
+
+w_lt5   <- 8.860
+w_5_18  <- 8.690 + 8.600 + 8.470*(4/5)
+w_18_40 <- 8.470*(1/5) + 8.220 + 7.930 + 7.610 + 7.150
+w_40_60 <- 6.590 + 6.040 + 5.370 + 4.550
+w_gt60  <- 3.720 + 2.960 + 2.210 + 1.520 + 0.910 + 0.440 + 0.150 + 0.040 + 0.005
+
+sum(collapsed$weight)   # should be 1
+
+```
+
+```{r}
+collapsed <- tibble::tibble(
+  age_group = factor(c("< 5","5-18","18-40","40-60","> 60"),
+                     levels = c("< 5","5-18","18-40","40-60","> 60")),
+  weight = c(w_lt5, w_5_18, w_18_40, w_40_60, w_gt60) / tot
+)
+
+stopifnot(abs(sum(collapsed$weight) - 1) < 1e-8)
+
+std_weights <- collapsed   # age_group, weight
+levels5 <- levels(std_weights$age_group)
+
+# 2) Normalize labels in data and denominators to match (no spaces)
+cases_by_age <- data %>%
+  mutate(age_group = factor(age_group, levels = levels5)) %>%
+  group_by(dx_gyear, age_group) %>%
+  summarise(n_cases = n(), .groups = "drop") %>%
+  tidyr::complete(dx_gyear, age_group = levels5, fill = list(n_cases = 0))
+
+denom <- midyear_by_group %>%
+  mutate(age_group = factor(age_group, levels = levels5))
+
+# 3) Compute rates
+age_std <- cases_by_age %>%
+  left_join(denom, by = c("dx_gyear" = "year", "age_group")) %>%
+  mutate(rate = (n_cases / mid_pop) * 1e5) %>%
+  left_join(std_weights, by = "age_group") %>%
+  group_by(dx_gyear) %>%
+  summarise(
+    age_std_rate = sum(rate * weight, na.rm = TRUE),
+    total_cases  = sum(n_cases, na.rm = TRUE),
+    total_pop    = sum(mid_pop,  na.rm = TRUE),
+    # crude_rate   = (total_cases / total_pop) * 1e5,
+    .groups = "drop"
+  )
+
+yearly_counts <- yearly_counts %>%
+  left_join(age_std %>% select(dx_gyear, age_std_rate), by = "dx_gyear")
+
+yearly_counts
+```
+
+
+
+```{r}
+# any join misses?
+tmp_join <- cases_by_age %>%
+  left_join(midyear_by_group, by = c("dx_gyear" = "year", "age_group"))
+
+# rows with missing mid_pop after the join
+missing_pop <- tmp_join %>% filter(is.na(mid_pop)) %>%
+  distinct(dx_gyear, age_group)
+missing_pop
+# If you see rows here, check age_group labels (hyphen vs en–dash, spaces, etc.)
+```
+
+```{r}
+# --- Step 1: Count the number of cases for each age group and year ---
+cases_by_age_group <- data %>%
+  group_by(dx_gyear, age_group) %>%
+  summarise(n_cases = n(), .groups = "drop")
+
+# --- Step 2: Join case counts with the population data ---
+# This merges your case counts with the mid-year population for each group.
+# It assumes your population data is in the 'midyear_by_group' dataframe.
+age_specific_rates <- cases_by_age_group %>%
+  left_join(midyear_by_group, by = c("dx_gyear" = "year", "age_group")) %>%
+  
+  # --- Step 3: Calculate the age-specific rate per 100,000 population ---
+  # We handle cases where the population might be zero to avoid division by zero errors.
+  mutate(
+    age_specific_rate = if_else(mid_pop > 0, (n_cases / mid_pop) * 100000, 0)
+  ) %>%
+
+  # --- Step 4: Select and display the final table ---
+  select(dx_gyear, age_group, n_cases, mid_pop, age_specific_rate) %>%
+  arrange(dx_gyear, age_group)
+
+# Print the resulting table
+print(age_specific_rates)
+```
+
+```{r}
+# --- Step 1: Count the total number of cases for each age group across ALL years ---
+total_cases_by_age_group <- data %>%
+  group_by(age_group) %>%
+  summarise(total_cases = n(), .groups = "drop")
+
+# --- Step 2: Sum the mid-year population for each age group across ALL years ---
+# This creates a total person-year denominator for each age group.
+total_pop_by_age_group <- midyear_by_group %>%
+  group_by(age_group) %>%
+  summarise(total_pop = sum(mid_pop, na.rm = TRUE), .groups = "drop")
+
+# --- Step 3: Join the aggregated case counts and population data ---
+age_specific_rates_all_years <- total_cases_by_age_group %>%
+  left_join(total_pop_by_age_group, by = "age_group") %>%
+  
+  # --- Step 4: Calculate the overall age-specific rate per 100,000 person-years ---
+  mutate(
+    age_specific_rate = if_else(total_pop > 0, (total_cases / total_pop) * 100000, 0)
+  ) %>%
+
+  # --- Step 5: Select and display the final table ---
+  select(age_group, total_cases, total_pop, age_specific_rate) %>%
+  arrange(age_group)
+
+# Print the resulting table
+print(age_specific_rates_all_years)
+```
+
+
+# Covid Era
+
+```{r}
+# Create period variable
+yearly_counts <- yearly_counts %>%
+  mutate(dx_gyear = as.integer(dx_gyear)) %>%
+  mutate(period = case_when(
+    dx_gyear >= 2014 & dx_gyear <= 2019 ~ "2014–2019",
+    dx_gyear >= 2020 & dx_gyear <= 2022 ~ "2020–2022",
+    TRUE ~ NA_character_  # if other years exist
+  )) %>%
+  filter(!is.na(period))  # Remove other years
+
+# Calculate mean (SD) for each period
+summary_stats <- yearly_counts %>%
+  group_by(period) %>%
+  summarise(
+    mean_cases        = mean(n_cases, na.rm = TRUE),
+    sd_cases          = sd(n_cases, na.rm = TRUE),
+    mean_crude_rate   = mean(crude_rate, na.rm = TRUE),
+    sd_crude_rate     = sd(crude_rate, na.rm = TRUE),
+    mean_age_std_rate = mean(age_std_rate, na.rm = TRUE),
+    sd_age_std_rate   = sd(age_std_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(summary_stats)
+
+```
+
+
+# Admission month
+
+```{r fig.align="center", echo = FALSE,fig.width = 12}
+# Aggregate counts by YearMonth
+monthly_counts <- data %>%
+  group_by(dx_gYearMonth) %>%
+  summarise(Admissions = n()) %>%
+  ungroup()
+
+# Convert YearMonth to a date for proper ordering
+monthly_counts <- monthly_counts %>%
+  mutate(YearMonthDate = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d"))
+
+# Plot with proper ordering
+ggplot(monthly_counts, aes(x = YearMonthDate, y = Admissions)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  scale_x_date(
+    date_labels = "%b-%Y",  # Month-Year format for labels
+    date_breaks = "4 months",  # Break every quarter
+    minor_breaks = NULL  # Remove minor breaks for clarity
+  ) +
+  labs(
+    title = "Monthly Admissions by Year",
+    x = "Quarter",
+    y = "Number of Admissions"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+```{r, fig.width=14, fig.height=6}
+# Step 1: Aggregate counts by YearMonth
+monthly_counts <- data %>%
+  group_by(dx_gYearMonth) %>%
+  summarise(Admissions = n()) %>%
+  ungroup()
+
+# Step 2: Convert YearMonth to date and extract year
+monthly_counts <- monthly_counts %>%
+  mutate(
+    YearMonthDate = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d"),
+    Year = format(YearMonthDate, "%Y")
+  )
+
+# Step 3: Plot with color grouped by year
+ggplot(monthly_counts, aes(x = YearMonthDate, y = Admissions, fill = Year)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Set3") +  # You can customize this palette
+  scale_x_date(
+    date_labels = "%b-%Y",
+    date_breaks = "4 months",
+    minor_breaks = NULL
+  ) +
+  labs(
+    title = "Monthly Admissions by Year",
+    x = "Month-Year",
+    y = "Number of Admissions",
+    fill = "Year"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+
+# COVID-19
+
+```{r}
+# Step 1: Filter COVID-positive rows
+covid_data <- data %>%
+  filter(COVID == 1)
+
+covid_data
+```
+
+
+```{r}
+# Step 2: Group by YearMonth
+covid_monthly <- covid_data %>%
+  group_by(dx_gYearMonth) %>%
+  summarise(Admissions = n(), .groups = "drop") %>%
+  mutate(
+    YearMonthDate = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d"),
+    Year = format(YearMonthDate, "%Y")
+  )
+
+# Step 3: Plot bar chart
+ggplot(covid_monthly, aes(x = YearMonthDate, y = Admissions, fill = Year)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Set3") +
+  scale_x_date(
+    date_labels = "%b-%Y",
+    date_breaks = "2 months",
+    minor_breaks = NULL
+  ) +
+  labs(
+    title = "Monthly COVID-19 Admissions",
+    x = "Month-Year",
+    y = "Number of COVID Admissions",
+    fill = "Year"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+data <- data %>%
+  mutate(
+    Cov_era = if_else(
+      as.Date(dateadm) >= as.Date("2021-04-06") & as.Date(dateadm) <= as.Date("2022-12-31"),
+      1, 0
+    )
+  )
+data
+```
+
+```{r}
+data %>%
+  filter(Cov_era == 1)
+```
+
+# 5-year median
+
+```{r}
+# Calculate monthly admissions by year and month
+monthly_trends <- data %>%
+  group_by(dx_gyear, dx_gmonth) %>%
+  summarise(Admissions = n(), .groups = "drop")
+
+# Correctly calculate the 5-year median
+monthly_median <- monthly_trends %>%
+  mutate(five_year_group = case_when(
+    dx_gyear >= 2013 & dx_gyear <= 2018 ~ "2013-2018",
+    dx_gyear >= 2018 & dx_gyear <= 2023 ~ "2018-2023",
+    TRUE ~ "Other"
+  )) %>%
+  filter(five_year_group != "Other") %>%  # Keep only the defined 5-year groups
+  group_by(dx_gmonth, five_year_group) %>%
+  summarise(Median_Admissions = median(Admissions), .groups = "drop")
+
+# Plot yearly trends and overlay the correct 5-year median
+ggplot() +
+  # Plot yearly trends
+  geom_line(data = monthly_trends, aes(x = dx_gmonth, y = Admissions, group = dx_gyear, color = factor(dx_gyear)), alpha = 0.5) +
+  # Overlay the corrected 5-year medians
+  geom_line(data = monthly_median, aes(x = dx_gmonth, y = Median_Admissions, group = five_year_group, color = five_year_group), size = 1.2) +
+  labs(
+    title = "Monthly Admissions and 5-Year Median Trends (2013-2018, 2018-2023)",
+    x = "Month",
+    y = "Number of Admissions",
+    color = "Year or 5-Year Group"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# Complication
+
+```{r}
+# Create new columns based on conditions in sec_dx and proc
+data <- data %>%
+  mutate(
+    Sepsis = ifelse(str_detect(sec_dx, "^A40|^A41"), 1, 0),  # Sepsis if sec_dx contains A40x or A41x
+    Dialysis = ifelse(str_detect(proc, "3995"), 1, 0),  # Dialysis if proc contains 3995
+    Res_fail = ifelse(str_detect(proc, "9671|9672"), 1, 0)  # Respiratory failure if proc contains 9671 or 9672
+  )
+
+data[data$Sepsis == 1,]
+```
+
+```{r}
+# Calculate total records
+total_records <- nrow(data)
+
+# Calculate frequency and percentage for each new column
+new_column_stats <- data %>%
+  summarise(
+    Sepsis_Count = sum(Sepsis, na.rm = TRUE),
+    Sepsis_Percentage = (sum(Sepsis, na.rm = TRUE) / total_records) * 100,
+    
+    Dialysis_Count = sum(Dialysis, na.rm = TRUE),
+    Dialysis_Percentage = (sum(Dialysis, na.rm = TRUE) / total_records) * 100,
+    
+    Res_fail_Count = sum(Res_fail, na.rm = TRUE),
+    Res_fail_Percentage = (sum(Res_fail, na.rm = TRUE) / total_records) * 100
+  )
+
+# View the results
+print(new_column_stats)
+```
+
+```{r}
+new_column_stats
+```
+
+
+# Antibiotics
+
+```{r}
+# Step 1: Define patterns
+pattern <- "(9921|0014|V5862|960[0-9]|E930[0-9]|V09[0-9])"
+
+# Step 2: Filter data
+proc_filtered <- data %>%
+  filter(str_detect(proc, pattern))
+
+# Step 3: Frequency table
+proc_freq_table <- proc_filtered %>%
+  count(proc, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+proc_filtered
+
+# View the result
+print(proc_freq_table)
+```
+
+```{r}
+# Step 1: Start from your filtered data (proc_filtered)
+proc_separated <- proc_filtered %>%
+  # Separate codes into a list
+  mutate(proc_list = str_split(proc, " ")) %>%
+  # Unnest the list so each code is its own row
+  unnest(proc_list) %>%
+  rename(Procedure_Code = proc_list)
+
+# Step 2: Count individual procedure codes
+proc_code_frequency <- proc_separated %>%
+  count(Procedure_Code, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+# View result
+print(proc_code_frequency)
+```
+
+```{r}
+# Frequency table of pdx_dx among filtered data
+pdx_dx_frequency <- proc_filtered %>%
+  count(pdx_dx, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+# View the result
+print(pdx_dx_frequency)
+```
+
+
+```{r}
+# Basic bar plot of diagnosis codes
+ggplot(pdx_dx_frequency, aes(x = reorder(pdx_dx, -Frequency), y = Frequency)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(
+    title = "Diagnoses among Patients Receiving Antibiotics",
+    x = "Primary Diagnosis Code (pdx_dx)",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+
+# Step 1: Keep only the top 10 diagnoses
+top10_pdx <- pdx_dx_frequency %>%
+  slice_max(Frequency, n = 10)
+
+# Step 2: Define your custom palette
+custom_palette <- c(
+  "B084" = "darkgreen",  
+  "A084" = "#1f78b4",         
+  "A090" = "#D98324",  
+  "A049" = "#fcae91",     
+  "A059" = "#fb6a4a",   
+  "K529" = "#ffff99", 
+  "A099" = "#FEC260",
+  "Others" = "#bdbdbd"
+)
+
+# Step 3: Plot
+ggplot(top10_pdx, aes(x = reorder(pdx_dx, -Frequency), y = Frequency, fill = pdx_dx)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = custom_palette, na.value = "#bdbdbd") +  # fallback to grey if missing
+  labs(
+    title = "Top 10 Diagnoses among Patients Receiving Antibiotics",
+    x = "Primary Diagnosis Code (pdx_dx)",
+    y = "Number of Admissions",
+    fill = "Diagnosis Code"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+# High cost
+
+```{r}
+# Step 1: Create binary outcome variable
+data <- data %>%
+  mutate(
+    HighCost = if_else(amount > 10000, 1, 0)
+  )
+```
+
+
+# Severity
+
+```{r}
+data <- data %>%
+  mutate(
+    severity = case_when(
+      HighCost == TRUE |
+      los >= 5 | 
+      adjrw >= 0.9 |
+      Sepsis == 1 | Dialysis == 1 | Res_fail == 1 |
+      diarrhea_dead == TRUE ~ "Severe",
+      TRUE ~ "Moderate"
+    )
+  )
+```
+
+```{r}
+# Create summary table
+severity_summary <- data %>%
+  count(severity) %>%
+  mutate(
+    percent = round(n / sum(n) * 100, 1),
+    summary = paste0(comma(n), " (", percent, "%)")
+  )
+
+# View result
+severity_summary
+
+```
+
+
+```{r}
+
+# 2. Check if the criteria worked by viewing summary stats for each group
+# The 'Severe' group should have much higher values.
+validation_summary <- data %>%
+  group_by(severity) %>%
+  summarise(
+    Admissions = n(),
+    Mean_LOS = mean(los, na.rm = TRUE),
+    Mean_Cost_THB = mean(amount, na.rm = TRUE),
+    Mortality_Rate = mean(diarrhea_dead == TRUE, na.rm = TRUE) * 100
+  )
+
+print("\nValidation Summary by Group:")
+print(validation_summary)
+```
+
+
+# DALY
+
+```{r}
+# Constants
+life_expectancy <- 92
+DW_moderate <- 0.188
+DW_severe <- 0.247
+
+# YLL = number of deaths × (life expectancy – age at death)
+data <- data %>%
+  mutate(
+    YLL = if_else(diarrhea_dead == TRUE, pmax(life_expectancy - age_y, 0), 0)
+  )
+
+data <- data %>%
+  mutate(
+    YLD = case_when(
+      severity == "Moderate" ~ DW_moderate,
+      severity == "Severe" ~ DW_severe,
+      TRUE ~ 0
+    )
+  )
+
+data <- data %>%
+  mutate(DALY = YLL + YLD)
+
+# Summarize total YLL, YLD, DALY
+daly_summary <- data %>%
+  summarise(
+    Total_Deaths = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    Total_YLL = sum(YLL, na.rm = TRUE),
+    Total_YLD = sum(YLD, na.rm = TRUE),
+    Total_DALY = sum(DALY, na.rm = TRUE)
+  )
+
+daly_summary
+```
+
+```{r}
+# Calculate annual DALYs
+daly_annual <- data %>%
+  group_by(dx_gyear) %>%
+  summarise(
+    Deaths = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    YLL = sum(YLL, na.rm = TRUE),
+    YLD = sum(YLD, na.rm = TRUE),
+    DALY = sum(DALY, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Calculate overall mean and SD of annual DALYs
+daly_summary_stats <- daly_annual %>%
+  summarise(
+    Mean_DALY = mean(DALY),
+    SD_DALY = sd(DALY)
+  )
+
+# View both tables
+print(daly_annual)
+print(daly_summary_stats)
+```
+
+```{r}
+# write_csv(daly_annual, "output/death_daly_year.csv")
+```
+
+
+```{r}
+# Bar plot of annual DALYs
+ggplot(daly_annual, aes(x = factor(dx_gyear), y = DALY)) +
+  geom_bar(stat = "identity", fill = "#F4C430", color = "black") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Total DALYs by Year of Diagnosis",
+    x = "Year",
+    y = "Disability-Adjusted Life Years (DALYs)"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+
+# Summary table
+
+```{r}
+region_levels <- c("Northeastern", "Central", "Southern", "Northern", "Eastern", "Western")
+data <- data %>%
+  mutate(region = factor(region, levels = region_levels))
+```
+
+```{r}
+total_deaths <- sum(data$diarrhea_dead == TRUE, na.rm = TRUE)
+total_deaths
+
+```
+
+
+```{r}
+## Age group summary
+age_summary <- data %>%
+  mutate(age_group = factor(age_group, levels = c("< 5", "5-18", "18-40", "40-60", "> 60"))) %>%
+  count(age_group) %>%
+  mutate(percent = n / sum(n) * 100,
+         Admission = paste0(comma(n), " (", round(percent, 1), "%)")) %>%
+  left_join(
+    data %>% group_by(age_group) %>%
+      summarise(
+        LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+        Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE))))
+      ),
+    by = "age_group"
+  ) %>%
+  left_join(
+    data %>% filter(diarrhea_dead == TRUE) %>%
+      count(age_group, name = "deaths") %>%
+      mutate(Death = paste0(comma(deaths), " (", round(deaths / total_deaths * 100, 1), "%)")),
+    by = "age_group"
+  ) %>%
+  replace_na(list(Death = "0 (0%)")) %>%
+  mutate(Variable = paste("•", age_group)) %>%
+  select(Variable, Admission, LOS, Cost, Death)
+
+## Hospital level
+hos_summary <- data %>%
+  count(hosLevel) %>%
+  mutate(percent = n / sum(n) * 100,
+         Admission = paste0(comma(n), " (", round(percent, 1), "%)")) %>%
+  left_join(
+    data %>% group_by(hosLevel) %>%
+      summarise(
+        LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+        Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE))))
+      ),
+    by = "hosLevel"
+  ) %>%
+  left_join(
+    data %>% filter(diarrhea_dead == TRUE) %>%
+      count(hosLevel, name = "deaths") %>%
+      mutate(Death = paste0(comma(deaths), " (", round(deaths / total_deaths * 100, 1), "%)")),
+    by = "hosLevel"
+  ) %>%
+  replace_na(list(Death = "0 (0%)")) %>%
+  mutate(Variable = paste("•", hosLevel)) %>%
+  select(Variable, Admission, LOS, Cost, Death)
+
+
+region_summary <- data %>%
+  mutate(region = factor(region, levels = region_levels)) %>%
+  count(region) %>%
+  mutate(
+    percent = n / sum(n) * 100,
+    Admission = paste0(comma(n), " (", round(percent, 1), "%)")
+  ) %>%
+  left_join(
+    data %>%
+      group_by(region) %>%
+      summarise(
+        LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+        Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE))))
+      ),
+    by = "region"
+  ) %>%
+  left_join(
+    data %>%
+      filter(diarrhea_dead == TRUE) %>%
+      count(region, name = "deaths") %>%
+      mutate(Death = paste0(comma(deaths), " (", round(deaths / total_deaths * 100, 1), "%)")),
+    by = "region"
+  ) %>%
+  replace_na(list(Death = "0 (0%)")) %>%
+  mutate(Variable = paste("•", region)) %>%
+  select(Variable, Admission, LOS, Cost, Death)
+
+## Underlying diseases
+disease_list <- c("DM", "HT", "COVID", "CKD", "COPD", "CVD", "Stroke", "CHF")
+
+underlying_summary <- lapply(disease_list, function(dx) {
+  temp <- data %>% filter(!!sym(dx) == 1)
+  temp_dead <- temp %>% filter(diarrhea_dead == TRUE)
+
+  tibble(
+    Variable = paste("•", dx),
+    Admission = paste0(comma(nrow(temp)), " (", round(nrow(temp) / nrow(data) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(temp$los, na.rm = TRUE), sd(temp$los, na.rm = TRUE)),
+    Cost = paste0(
+      comma(round(mean(temp$amount, na.rm = TRUE))), 
+      " ± ", 
+      comma(round(sd(temp$amount, na.rm = TRUE)))
+    ),
+    Death = paste0(
+      comma(nrow(temp_dead)), 
+      " (", round(nrow(temp_dead) / total_deaths * 100, 1), "%)"
+    )
+  )
+}) %>% bind_rows()
+
+## Step 1: Create DALYs column for each subgroup
+
+# Vectorized DALY formatter
+format_daly <- function(val) {
+  sapply(val, function(x) {
+    if (is.na(x)) return("0")
+    paste0(comma(round(x)))
+  })
+}
+
+# Age group DALYs (corrected)
+age_daly <- data %>%
+  group_by(age_group) %>%
+  summarise(DALYs = sum(DALY, na.rm = TRUE)) %>%
+  mutate(Variable = paste("•", age_group),
+         DALYs = format_daly(DALYs))
+
+## Hospital level DALYs
+hos_daly <- data %>%
+  group_by(hosLevel) %>%
+  summarise(DALYs = sum(DALY, na.rm = TRUE)) %>%
+  mutate(Variable = paste("•", hosLevel),
+         DALYs = format_daly(DALYs))
+
+## Region DALYs
+region_daly <- data %>%
+  group_by(region) %>%
+  summarise(DALYs = sum(DALY, na.rm = TRUE)) %>%
+  mutate(Variable = paste("•", region),
+         DALYs = format_daly(DALYs))
+
+## Underlying disease DALYs
+underlying_daly <- lapply(disease_list, function(dx) {
+  temp <- data %>% filter(!!sym(dx) == 1)
+  tibble(
+    Variable = paste("•", dx),
+    DALYs = format_daly(sum(temp$DALY, na.rm = TRUE))
+  )
+}) %>% bind_rows()
+
+# Complications
+complication_list <- c("Sepsis", "Dialysis", "Res_fail")
+
+complications_summary <- lapply(complication_list, function(comp) {
+  temp <- data %>% filter(!!sym(comp) == 1)
+  temp_dead <- temp %>% filter(diarrhea_dead == TRUE)
+
+  tibble(
+    Variable = paste("•", comp),
+    Admission = paste0(comma(nrow(temp)), " (", round(nrow(temp) / nrow(data) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(temp$los, na.rm = TRUE), sd(temp$los, na.rm = TRUE)),
+    Cost = paste0(
+      comma(round(mean(temp$amount, na.rm = TRUE))), 
+      " ± ", 
+      comma(round(sd(temp$amount, na.rm = TRUE)))
+    ),
+    Death = paste0(
+      comma(nrow(temp_dead)), 
+      " (", round(nrow(temp_dead) / total_deaths * 100, 1), "%)"
+    ),
+    DALYs = format_daly(sum(temp$DALY, na.rm = TRUE))
+  )
+}) %>% bind_rows()
+
+# COVID era summary
+covid_summary <- data %>%
+  filter(Cov_era == 1) %>%
+  summarise(
+    Variable = "• COVID era",
+    Admission = paste0(comma(n()), " (", round(n() / nrow(data) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE)))),
+    Death = paste0(comma(sum(diarrhea_dead == TRUE)), " (", round(sum(diarrhea_dead == TRUE) / total_deaths * 100, 1), "%)"),
+    DALYs = format_daly(sum(DALY, na.rm = TRUE))
+  )
+
+# Repeated episode summary
+repeat_summary <- data %>%
+  filter(repeated == TRUE) %>%
+  summarise(
+    Variable = "• Repeated admission",
+    Admission = paste0(comma(n()), " (", round(n() / nrow(data) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE)))),
+    Death = paste0(comma(sum(diarrhea_dead == TRUE)), " (", round(sum(diarrhea_dead == TRUE) / total_deaths * 100, 1), "%)"),
+    DALYs = format_daly(sum(DALY, na.rm = TRUE))
+  )
+
+## Step 2: Bind DALYs to each subgroup summary
+age_summary <- left_join(age_summary, age_daly, by = "Variable") %>% select(-age_group)
+hos_summary <- left_join(hos_summary, hos_daly, by = "Variable") %>% select(-hosLevel)
+region_summary <- left_join(region_summary, region_daly, by = "Variable") %>% select(-region)
+underlying_summary <- left_join(underlying_summary, underlying_daly, by = "Variable")
+
+full_table <- bind_rows(
+  tibble(Variable = "Age Group", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  age_summary,
+  tibble(Variable = "Hospital Level", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  hos_summary,
+  tibble(Variable = "Region", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  region_summary,
+  tibble(Variable = "Underlying Diseases", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  underlying_summary,
+  tibble(Variable = "Complications", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  complications_summary,
+  tibble(Variable = "Other characteristics", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  covid_summary,
+  repeat_summary
+)
+
+## Step 4: Display final table
+kable(full_table, align = "lccccc",
+      col.names = c("Variable", "Admission (%)", "LOS ± SD", "Cost ± SD", "Death (%)", "DALYs"))
+
+```
+
+
+
+```{r}
+# ICD-10 codes of interest
+target_icd <- c("A099", "A090", "A059", "A084", "A049", "K529")
+total_cases <- nrow(data)
+
+# Summary table
+icd_summary <- data %>%
+  filter(pdx_dx %in% target_icd) %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    n = n(),
+    percent = round(n / total_cases * 100, 1),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = sprintf("%s ± %s",
+                   comma(round(mean(amount, na.rm = TRUE))),
+                   comma(round(sd(amount, na.rm = TRUE)))),
+    Death = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    DeathRate = round(Death / total_deaths * 100, 1),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Admission = paste0(comma(n), " (", percent, "%)"),
+    DeathText = paste0(comma(Death), " (", DeathRate, "%)")
+  ) %>%
+  arrange(desc(n)) %>%
+  select(ICD10 = pdx_dx, Admission, LOS, Cost, Death = DeathText)
+
+# DALY summarization by ICD-10
+icd_daly <- data %>%
+  filter(pdx_dx %in% target_icd) %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    DALYs = sum(DALY, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    DALYs = comma(round(DALYs))
+  )
+
+# Final ICD-10 summary table with DALYs
+icd_summary <- data %>%
+  filter(pdx_dx %in% target_icd) %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    n = n(),
+    percent = round(n / total_cases * 100, 1),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = sprintf("%s ± %s",
+                   comma(round(mean(amount, na.rm = TRUE))),
+                   comma(round(sd(amount, na.rm = TRUE)))),
+    Death = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    DeathRate = round(Death / total_deaths * 100, 1),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Admission = paste0(comma(n), " (", percent, "%)"),
+    DeathText = paste0(comma(Death), " (", DeathRate, "%)")
+  ) %>%
+  left_join(icd_daly, by = c("pdx_dx")) %>%
+  arrange(desc(n)) %>%
+  select(ICD10 = pdx_dx, Admission, LOS, Cost, Death = DeathText, DALYs)
+
+# View the result
+kable(icd_summary)
+```
+
+
+```{r}
+# Generate full summary and sort by admission count
+pathogen_freq <- data %>%
+  filter(!is.na(spec_pathogen)) %>%
+  group_by(spec_pathogen) %>%
+  summarise(
+    n = n(),
+    percent = round(n / nrow(data) * 100, 1),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = sprintf("%s ± %s",
+                   comma(round(mean(amount, na.rm = TRUE))),
+                   comma(round(sd(amount, na.rm = TRUE)))),
+    Death = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    DeathRate = round(Death / total_deaths * 100, 1),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Admission = paste0(comma(n), " (", percent, "%)"),
+    DeathText = paste0(comma(Death), " (", DeathRate, "%)")
+  ) %>%
+  rename(Pathogen = spec_pathogen) %>%
+  arrange(desc(n)) %>%
+  select(Pathogen, Admission, LOS, Cost, Death = DeathText)
+
+# Step 1: Summarize DALYs by pathogen
+pathogen_daly <- data %>%
+  filter(!is.na(spec_pathogen)) %>%
+  group_by(spec_pathogen) %>%
+  summarise(
+    DALYs = sum(DALY, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    DALYs = comma(round(DALYs))
+  )
+
+# Step 2: Full summary table with DALYs
+pathogen_freq <- data %>%
+  filter(!is.na(spec_pathogen)) %>%
+  group_by(spec_pathogen) %>%
+  summarise(
+    n = n(),
+    percent = round(n / nrow(data) * 100, 1),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = sprintf("%s ± %s",
+                   comma(round(mean(amount, na.rm = TRUE))),
+                   comma(round(sd(amount, na.rm = TRUE)))),
+    Death = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    DeathRate = round(Death / total_deaths * 100, 1),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Admission = paste0(comma(n), " (", percent, "%)"),
+    DeathText = paste0(comma(Death), " (", DeathRate, "%)")
+  ) %>%
+  rename(Pathogen = spec_pathogen) %>%
+  left_join(pathogen_daly, by = c("Pathogen" = "spec_pathogen")) %>%
+  arrange(desc(n)) %>%
+  select(Pathogen, Admission, LOS, Cost, Death = DeathText, DALYs)
+
+# Step 3: View table
+kable(pathogen_freq)
+```
+
+# COVID-19 Stringency Index
+
+```{r}
+OSI <- read_csv("data/OSI/thai_OSI.csv")
+OSI <- OSI %>%                                    # <-- your original data frame
+  mutate(Date = as.Date(as.character(Date), "%Y%m%d")) %>%  # numeric ▶ character ▶ Date
+  select(Date, OSI = StringencyIndex_Average) 
+OSI
+```
+
+```{r}
+data <- data %>%
+  left_join(OSI, by = c("dateadm" = "Date")) %>%
+  replace_na(list(OSI = 0))
+data
+```
+
+
+# Colinearity check
+
+```{r}
+# Step 2: Categorize pdx_dx into 7 codes + "Others"
+key_codes <- c("A099", "A090", "A084", "A059", "A049", "K529", "B084")
+data <- data %>%
+  mutate(
+    pdx_dx_group = if_else(pdx_dx %in% key_codes, pdx_dx, "Others"),
+    pdx_dx_group = factor(pdx_dx_group)
+  )
+
+data <- data %>%
+  mutate(across(c(age_group, HighCost, sex, sex_label, maininscl, hosLevel, region, maininscl_group, dx_gyear, pdx_dx_group, spec_pathogen, DM, HT, CKD, COPD, Stroke, COVID, Sepsis, Dialysis, Res_fail, Cov_era, outcome), as.factor))
+
+```
+
+
+```{r}
+vars_to_check <- c(
+  "age_group", "sex_label", "hosLevel", "region", 
+  "maininscl_group", "spec_pathogen",
+  "DM", "HT", "CKD", "COPD", "Stroke", "COVID", "Sepsis", "Dialysis", "Res_fail", 
+  "OSI", "diarrhea_dead","HighCost", "los", "repeated"
+)
+
+```
+
+```{r}
+model <- glm(HighCost ~ ., data = data %>% select(all_of(vars_to_check)) %>% na.omit(), family = binomial())
+
+# Check multicollinearity (handles factors + aliasing)
+check_collinearity(model)
+```
+
+```{r}
+model <- glm(diarrhea_dead ~ ., data = data %>% select(all_of(vars_to_check)) %>% na.omit(), family = binomial())
+
+# Check multicollinearity (handles factors + aliasing)
+check_collinearity(model)
+```
+
+```{r}
+# Step 1: Select and factorize all variables
+cat_data <- data %>%
+  select(age_group, HighCost, sex_label, hosLevel, region, maininscl_group, pdx_dx_group, spec_pathogen,
+         DM, HT, CKD, COPD, Stroke, COVID, Sepsis, Dialysis, Res_fail, OSI, diarrhea_dead, los, repeated) %>%
+  mutate(across(everything(), as.factor)) %>%
+  na.omit()
+
+# Step 2: Compute Cramér’s V pairwise matrix
+get_cramers_matrix <- function(df) {
+  var_names <- names(df)
+  n <- length(var_names)
+  mat <- matrix(NA, nrow = n, ncol = n)
+  rownames(mat) <- colnames(mat) <- var_names
+
+  for (i in 1:n) {
+    for (j in 1:n) {
+      if (i == j) {
+        mat[i, j] <- 1
+      } else {
+        result <- suppressWarnings(cramer_v(table(df[[i]], df[[j]])))
+        mat[i, j] <- result
+      }
+    }
+  }
+  return(mat)
+}
+
+cramer_matrix <- get_cramers_matrix(cat_data)
+
+# Step 3: Plot the heatmap
+corrplot(cramer_matrix, method = "color", tl.cex = 0.8, addCoef.col = "black", number.cex = 0.7)
+```
+
+
+# Correlation LOS and adj.RW
+
+```{r}
+cor(data$adjrw, data$los, use = "complete.obs", method = "pearson")
+```
+
+```{r}
+ggplot(data, aes(x = adjrw, y = los)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(
+    title = "Correlation Between adjrw and LOS",
+    x = "Adjusted Relative Weight (adjrw)",
+    y = "Length of Stay (LOS)"
+  ) +
+  theme_minimal()
+
+```
+
+# Logistric regression the Cost
+
+```{r}
+stop("Stop here") # Execution will pause here
+```
+
+```{r}
+# Define the desired order of levels
+pathogen_levels <- c(
+  "Unspecific",
+  "Hand-Foot-Mouth Disease (HFMD)",
+  "Typhoid & Paratyphoid",
+  "Salmonella",
+  "Amoeba",
+  "Rotavirus",
+  "Strongyloides",
+  "E. coli",
+  "Cow milk allergic",
+  "Hepatitis A",
+  "C. difficile",
+  "Ascariasis",
+  "V.parahaemolyticus",
+  "Cholera",
+  "Giardia",
+  "Shigella",
+  "Staphylococcal toxin",
+  "Adenoviral enteritis",
+  "Capillaria",
+  "Norovirus",
+  "Isospora",
+  "Enterovirus",
+  "Bacillus cereus",
+  "C.perfringens",
+  "Trichuris",
+  "Campylobacter",
+  "Cryptosporidium",
+  "Botulism",
+  "Yersinia",
+  "Balantidium",
+  "Angiostrongylus",
+  "Trichostrongylus",
+  "Anisakis"
+)
+
+# Relevel the factor
+data <- data %>%
+  mutate(spec_pathogen = factor(spec_pathogen, levels = pathogen_levels))
+```
+
+
+```{r}
+# Set reference levels
+data <- data %>%
+  mutate(
+    region = relevel(region, ref = "Southern"),
+    spec_pathogen = relevel(spec_pathogen, ref = "Unspecific"),
+    maininscl_group = relevel(maininscl_group, ref = "UCS"),
+    
+  )
+```
+
+
+
+```{r}
+# Model 1
+logit_cost <- glm(
+  HighCost ~ age_group + sex_label + hosLevel + region + maininscl_group + spec_pathogen+ DM + HT + CKD + COPD + Stroke + COVID + Sepsis + Dialysis + Res_fail + OSI + repeated + los,
+  data = data,
+  family = binomial
+)
+
+```
+
+```{r}
+# Display odds ratios and 95% CI
+logistic.display(logit_cost)
+```
+
+
+```{r}
+logit_dead <- glm(
+  diarrhea_dead ~ age_group + sex_label + hosLevel + region + maininscl_group + spec_pathogen+ DM + HT + CKD + COPD + Stroke + COVID + Sepsis + Dialysis + Res_fail + OSI + repeated + los,
+  data = data,
+  family = binomial
+)
+logistic.display(logit_dead)
+```
+
+```{r}
+logit_model3 <- glm(
+  HighCost ~ age_group + sex_label + hosLevel + region + pdx_dx_group + DM + HT + CKD + Sepsis + Dialysis + Res_fail + Cov_era + los,
+  data = data,
+  family = binomial
+)
+logistic.display(logit_model3)
+```
+
+
+```{r}
+logit_model4 <- glm(
+  HighCost ~ age_group + sex_label + hosLevel + region + pdx_dx_group + DM + HT + CKD + Sepsis + Dialysis + Res_fail + Cov_era + outcome + los,
+  data = data,
+  family = binomial
+)
+```
+
+
+```{r}
+
+logistic.display(logit_model4)
+```
+
+# Population Attributable Fraction (PAF)
+
+```{r}
+# Prevalence of Sepsis in the population
+Pe <- mean(data$Sepsis == 1, na.rm = TRUE)
+
+# Use OR as RR approximation if rare outcome
+OR <- exp(coef(logit_model2)["Sepsis1"])
+
+# Calculate PAF
+PAF <- (Pe * (OR - 1)) / (Pe * (OR - 1) + 1)
+PAF_percent <- round(PAF * 100, 1)
+PAF_percent
+```
+
+```{r}
+coef(logit_model2)
+```
+
+
+# Children < 5 year
+
+```{r}
+data_5 <- data %>% filter(age_group == "< 5")
+
+data_5
+```
+
+```{r}
+# write_csv(data_5, "output/data_5.csv")
+```
+
+
+```{r}
+## Hospital level
+hos_summary <- data_5 %>%
+  count(hosLevel) %>%
+  mutate(percent = n / sum(n) * 100,
+         Admission = paste0(comma(n), " (", round(percent, 1), "%)")) %>%
+  left_join(
+    data_5 %>% group_by(hosLevel) %>%
+      summarise(
+        LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+        Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE))))
+      ),
+    by = "hosLevel"
+  ) %>%
+  left_join(
+    data_5 %>% filter(diarrhea_dead == TRUE) %>%
+      count(hosLevel, name = "deaths") %>%
+      mutate(Death = paste0(comma(deaths), " (", round(deaths / total_deaths * 100, 1), "%)")),
+    by = "hosLevel"
+  ) %>%
+  replace_na(list(Death = "0 (0%)")) %>%
+  mutate(Variable = paste("•", hosLevel)) %>%
+  select(Variable, Admission, LOS, Cost, Death)
+
+
+region_summary <- data_5 %>%
+  mutate(region = factor(region, levels = region_levels)) %>%
+  count(region) %>%
+  mutate(
+    percent = n / sum(n) * 100,
+    Admission = paste0(comma(n), " (", round(percent, 1), "%)")
+  ) %>%
+  left_join(
+    data_5 %>%
+      group_by(region) %>%
+      summarise(
+        LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+        Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE))))
+      ),
+    by = "region"
+  ) %>%
+  left_join(
+    data_5 %>%
+      filter(diarrhea_dead == TRUE) %>%
+      count(region, name = "deaths") %>%
+      mutate(Death = paste0(comma(deaths), " (", round(deaths / total_deaths * 100, 1), "%)")),
+    by = "region"
+  ) %>%
+  replace_na(list(Death = "0 (0%)")) %>%
+  mutate(Variable = paste("•", region)) %>%
+  select(Variable, Admission, LOS, Cost, Death)
+
+
+## Step 1: Create DALYs column for each subgroup
+
+# Vectorized DALY formatter
+format_daly <- function(val) {
+  sapply(val, function(x) {
+    if (is.na(x)) return("0")
+    paste0(comma(round(x)))
+  })
+}
+
+## Hospital level DALYs
+hos_daly <- data_5 %>%
+  group_by(hosLevel) %>%
+  summarise(DALYs = sum(DALY, na.rm = TRUE)) %>%
+  mutate(Variable = paste("•", hosLevel),
+         DALYs = format_daly(DALYs))
+
+## Region DALYs
+region_daly <- data_5 %>%
+  group_by(region) %>%
+  summarise(DALYs = sum(DALY, na.rm = TRUE)) %>%
+  mutate(Variable = paste("•", region),
+         DALYs = format_daly(DALYs))
+
+# Complications
+complication_list <- c("COVID", "Sepsis", "Dialysis", "Res_fail")
+
+complications_summary <- lapply(complication_list, function(comp) {
+  temp <- data_5 %>% filter(!!sym(comp) == 1)
+  temp_dead <- temp %>% filter(diarrhea_dead == TRUE)
+
+  tibble(
+    Variable = paste("•", comp),
+    Admission = paste0(comma(nrow(temp)), " (", round(nrow(temp) / nrow(data_5) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(temp$los, na.rm = TRUE), sd(temp$los, na.rm = TRUE)),
+    Cost = paste0(
+      comma(round(mean(temp$amount, na.rm = TRUE))), 
+      " ± ", 
+      comma(round(sd(temp$amount, na.rm = TRUE)))
+    ),
+    Death = paste0(
+      comma(nrow(temp_dead)), 
+      " (", round(nrow(temp_dead) / total_deaths * 100, 1), "%)"
+    ),
+    DALYs = format_daly(sum(temp$DALY, na.rm = TRUE))
+  )
+}) %>% bind_rows()
+
+# COVID era summary
+covid_summary <- data_5 %>%
+  filter(Cov_era == 1) %>%
+  summarise(
+    Variable = "• COVID era",
+    Admission = paste0(comma(n()), " (", round(n() / nrow(data_5) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE)))),
+    Death = paste0(comma(sum(diarrhea_dead == TRUE)), " (", round(sum(diarrhea_dead == TRUE) / total_deaths * 100, 1), "%)"),
+    DALYs = format_daly(sum(DALY, na.rm = TRUE))
+  )
+
+# Repeated episode summary
+repeat_summary <- data_5 %>%
+  filter(repeated == TRUE) %>%
+  summarise(
+    Variable = "• Repeated admission",
+    Admission = paste0(comma(n()), " (", round(n() / nrow(data_5) * 100, 1), "%)"),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = paste0(comma(round(mean(amount, na.rm = TRUE))), " ± ", comma(round(sd(amount, na.rm = TRUE)))),
+    Death = paste0(comma(sum(diarrhea_dead == TRUE)), " (", round(sum(diarrhea_dead == TRUE) / total_deaths * 100, 1), "%)"),
+    DALYs = format_daly(sum(DALY, na.rm = TRUE))
+  )
+
+## Step 2: Bind DALYs to each subgroup summary
+hos_summary <- left_join(hos_summary, hos_daly, by = "Variable") %>% select(-hosLevel)
+region_summary <- left_join(region_summary, region_daly, by = "Variable") %>% select(-region)
+
+full_table <- bind_rows(
+  tibble(Variable = "Hospital Level", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  hos_summary,
+  tibble(Variable = "Region", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  region_summary,
+  tibble(Variable = "Complications", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  complications_summary,
+  tibble(Variable = "Other characteristics", Admission = "", LOS = "", Cost = "", Death = "", DALYs = ""),
+  covid_summary,
+  repeat_summary
+)
+
+## Step 4: Display final table
+kable(full_table, align = "lccccc",
+      col.names = c("Variable", "Admission (%)", "LOS ± SD", "Cost ± SD", "Death (%)", "DALYs"))
+
+```
+
+
+```{r}
+# Calculate the frequency of pdx_dx in data_5
+data_5_frequency <- data_5 %>%
+  count(pdx_dx, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+# Add percentage
+data_5_frequency <- data_5_frequency %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1))
+
+data_5_frequency
+```
+
+
+```{r}
+# Calculate the frequency of pdx_dx in data_5
+data_5_frequency <- data_5 %>%
+  count(spec_pathogen, name = "Frequency") %>%
+  arrange(desc(Frequency))
+
+# Add percentage
+data_5_frequency <- data_5_frequency %>%
+  mutate(Percentage = round(Frequency / sum(Frequency) * 100, 1))
+
+data_5_frequency
+```
+
+```{r}
+# ICD-10 codes of interest
+target_icd <- c("A099", "A090", "A084", "B084", "A049", "A059")
+total_cases_under5 <- nrow(data_5)
+total_deaths_under5 <- sum(data_5$diarrhea_dead == TRUE, na.rm = TRUE)
+
+# DALY summarization by ICD-10
+icd_daly_under5 <- data_5 %>%
+  filter(pdx_dx %in% target_icd) %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    DALYs = sum(DALY, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(DALYs = comma(round(DALYs)))
+
+# Final ICD-10 summary table for <5
+icd_summary_under5 <- data_5 %>%
+  filter(pdx_dx %in% target_icd) %>%
+  group_by(pdx_dx) %>%
+  summarise(
+    n = n(),
+    percent = round(n / total_cases_under5 * 100, 1),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = sprintf("%s ± %s",
+                   comma(round(mean(amount, na.rm = TRUE))),
+                   comma(round(sd(amount, na.rm = TRUE)))),
+    Death = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    DeathRate = round(Death / total_deaths_under5 * 100, 1),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Admission = paste0(comma(n), " (", percent, "%)"),
+    DeathText = paste0(comma(Death), " (", DeathRate, "%)")
+  ) %>%
+  left_join(icd_daly_under5, by = c("pdx_dx")) %>%
+  arrange(desc(n)) %>%
+  select(ICD10 = pdx_dx, Admission, LOS, Cost, Death = DeathText, DALYs)
+
+# Display table
+kable(icd_summary_under5, align = "lccccc",
+      col.names = c("ICD-10", "Admission (%)", "LOS ± SD", "Cost ± SD", "Death (%)", "DALYs"))
+```
+
+```{r}
+# Recalculate total deaths in <5
+total_deaths_5 <- sum(data_5$diarrhea_dead == TRUE, na.rm = TRUE)
+
+# Step 1: Summarize DALYs by pathogen in <5
+pathogen_daly_5 <- data_5 %>%
+  filter(!is.na(spec_pathogen)) %>%
+  group_by(spec_pathogen) %>%
+  summarise(DALYs = sum(DALY, na.rm = TRUE), .groups = "drop") %>%
+  mutate(DALYs = comma(round(DALYs)))
+
+# Step 2: Full summary table with DALYs for <5
+pathogen_freq_5 <- data_5 %>%
+  filter(!is.na(spec_pathogen)) %>%
+  group_by(spec_pathogen) %>%
+  summarise(
+    n = n(),
+    percent = round(n / nrow(data_5) * 100, 1),
+    LOS = sprintf("%.1f ± %.1f", mean(los, na.rm = TRUE), sd(los, na.rm = TRUE)),
+    Cost = sprintf("%s ± %s",
+                   comma(round(mean(amount, na.rm = TRUE))),
+                   comma(round(sd(amount, na.rm = TRUE)))),
+    Death = sum(diarrhea_dead == TRUE, na.rm = TRUE),
+    DeathRate = round(Death / total_deaths_5 * 100, 1),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Admission = paste0(comma(n), " (", percent, "%)"),
+    DeathText = paste0(comma(Death), " (", DeathRate, "%)")
+  ) %>%
+  rename(Pathogen = spec_pathogen) %>%
+  left_join(pathogen_daly_5, by = c("Pathogen" = "spec_pathogen")) %>%
+  arrange(desc(n)) %>%
+  select(Pathogen, Admission, LOS, Cost, Death = DeathText, DALYs)
+
+# Step 3: View table
+kable(pathogen_freq_5, align = "lccccc")
+```
+
+
+```{r}
+# 1. Define the target grouped pathogens you want to visualize
+target_pathogens <- c(
+  "Hand-Foot-Mouth Disease (HFMD)",
+  "Salmonella",
+  "Rotavirus",
+  "Amoeba",
+  "Cow milk allergic",
+  "E. coli",
+  "Typhoid & Paratyphoid",
+  "Ascariasis",
+  "Adenoviral enteritis"
+)
+
+# 2. Prepare monthly counts and 3-month moving averages
+monthly_counts_final <- data_5 %>%
+  filter(spec_pathogen %in% target_pathogens) %>%
+  group_by(dx_gYearMonth, spec_pathogen) %>%
+  summarise(Admissions = n(), .groups = 'drop') %>%
+  mutate(
+    YearMonthDate = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d")
+  ) %>%
+  group_by(spec_pathogen) %>%
+  arrange(YearMonthDate) %>%
+  mutate(
+    Admissions_MA = rollmean(Admissions, k = 3, fill = NA, align = "right")
+  ) %>%
+  ungroup() %>%
+  mutate(spec_pathogen = factor(spec_pathogen, levels = target_pathogens))
+
+# 3. Plot the time series with separate facets
+ggplot(monthly_counts_final, aes(x = YearMonthDate)) +
+  geom_line(aes(y = Admissions), color = "grey80", linewidth = 0.8) +
+  geom_line(aes(y = Admissions_MA), color = "firebrick", linewidth = 1.0) +
+  facet_wrap(~ spec_pathogen, scales = "free_y") +
+  scale_x_date(
+    date_labels = "%b-%Y",
+    date_breaks = "1 year"
+  ) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Monthly Admission Trends with 3-Month Moving Average",
+    subtitle = "Each chart shows smoothed admission trend by pathogen",
+    x = "Month-Year",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 9, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+
+# Rota vaccine 
+
+```{r}
+# Load the rotavirus vaccine coverage data
+rota_coverage <- read_csv("data/rota/rota_coverage.csv")
+rota_coverage
+```
+
+```{r}
+rota_coverage <- rota_coverage %>%
+  mutate(YearMonth = format(dmy(date), "%Y-%m"))
+rota_coverage <- rota_coverage[, c("YearMonth", "rota_coverage")]
+```
+
+
+```{r}
+rota_coverage
+```
+
+```{r}
+data_5 <- data_5 %>%
+  mutate(YearMonth = format(ymd(dateadm), "%Y-%m"))
+
+```
+
+```{r}
+# รวมข้อมูล
+data_5 <- data_5 %>%
+  left_join(rota_coverage, by = "YearMonth")
+data_5
+```
+
+```{r}
+data_5
+```
+
+
+```{r}
+# Step 1: Create a new column indicating rotavirus case
+data_5 <- data_5 %>%
+  mutate(rota = ifelse(spec_pathogen == "Rotavirus", 1, 0))
+```
+
+
+```{r}
+# Step 2: Summarize monthly rotavirus cases
+rota_monthly <- data_5 %>%
+  group_by(YearMonth) %>%
+  summarise(rota_cases = sum(rota, na.rm = TRUE)) %>%
+  ungroup()
+
+# Step 3: Merge with rota_coverage dataset
+# Ensure date format matches
+rota_coverage <- rota_coverage %>%
+  mutate(YearMonthDate = as.Date(paste0(YearMonth, "-01")))
+
+rota_merged <- rota_monthly %>%
+  left_join(rota_coverage, by = "YearMonth")
+rota_merged
+```
+
+
+```{r}
+# Step 4: Plot combo chart
+ggplot(rota_merged, aes(x = YearMonthDate)) +
+  geom_col(aes(y = rota_cases), fill = "steelblue") +
+  geom_line(aes(y = rota_coverage * max(rota_cases) / 100), color = "red", size = 1.2) +
+  scale_y_continuous(
+    name = "Number of Rotavirus Cases",
+    sec.axis = sec_axis(~ . * 100 / max(rota_merged$rota_cases), name = "Vaccine Coverage (%)")
+  ) +
+  labs(title = "Rotavirus Cases and Vaccine Coverage Over Time",
+       x = "Month") +
+  theme_minimal() +
+  theme(axis.title.y.right = element_text(color = "red"))
+```
+
+
+```{r}
+monthly_counts_final
+```
+
+
+```{r}
+# Filter only Rotavirus data
+rotavirus_data <- monthly_counts_final %>%
+  filter(spec_pathogen == "Rotavirus")
+
+# Plot time series for Rotavirus
+ggplot(rotavirus_data, aes(x = YearMonthDate)) +
+  geom_line(aes(y = Admissions), color = "grey80", linewidth = 0.8) +
+  geom_line(aes(y = Admissions_MA), color = "firebrick", linewidth = 1.0) +
+  scale_x_date(
+    date_labels = "%b-%Y",
+    date_breaks = "1 year"
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Monthly Admission Trends of Rotavirus",
+    subtitle = "With 3-Month Moving Average",
+    x = "Month-Year",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r}
+# Prepare the dataset
+ddi_data <- bind_rows(
+  monthly_counts_final %>% filter(spec_pathogen == "Rotavirus") %>% mutate(group = 1),
+  monthly_counts_final %>% filter(spec_pathogen == "Amoeba") %>% mutate(group = 0)
+) %>%
+  mutate(period = if_else(YearMonthDate >= as.Date("2020-01-01"), 1, 0))
+```
+
+```{r}
+ggplot(ddi_data, aes(x = YearMonthDate, y = Admissions, color = factor(group))) +
+  geom_line() +
+  geom_vline(xintercept = as.Date("2020-01-01"), linetype = "dashed") +
+  labs(color = "Pathogen", title = "Rotavirus vs Control Pathogen Trends")
+```
+
+
+```{r}
+# Difference-in-Differences model
+model <- lm(Admissions ~ group * period, data = ddi_data)
+summary(model)
+```
+
+```{r}
+# Define intervention point
+vaccine_date <- as.Date("2020-01-01")
+
+# Subset to target pathogens
+target_pathogens <- c(
+  "Hand-Foot-Mouth Disease (HFMD)", "Salmonella", "Rotavirus", "Amoeba",
+  "Cow milk allergic", "E. coli", "Typhoid & Paratyphoid", 
+  "Ascariasis", "Adenoviral enteritis"
+)
+
+# Create base dataset
+did_data <- monthly_counts_final %>%
+  filter(spec_pathogen %in% target_pathogens) %>%
+  mutate(
+    post = if_else(YearMonthDate >= vaccine_date, 1, 0),
+    rotavirus_target = if_else(spec_pathogen == "Rotavirus", 1, 0),
+    time_num = as.numeric(YearMonthDate - min(YearMonthDate)) / 30.44  # in months
+  )
+
+did_data
+```
+
+
+```{r}
+# DiD model: pathogen-level fixed effects with interaction
+model <- feols(
+  Admissions ~ post * rotavirus_target | spec_pathogen + YearMonthDate,
+  data = did_data
+)
+
+summary(model)
+```
+
+
+```{r}
+# Estimate predicted values for plotting
+did_data <- did_data %>%
+  mutate(predicted = predict(model, newdata = .))
+
+# Plot actual vs predicted for Rotavirus
+ggplot(filter(did_data, spec_pathogen == "Rotavirus"), 
+       aes(x = YearMonthDate)) +
+  geom_line(aes(y = Admissions), color = "grey50", size = 0.7) +
+  geom_line(aes(y = predicted), color = "firebrick", size = 1.2) +
+  geom_vline(xintercept = as.numeric(vaccine_date), linetype = "dashed", color = "black") +
+  labs(
+    title = "Difference-in-Differences: Rotavirus vs Other Pathogens",
+    subtitle = "Dashed line = vaccine rollout (Jan 2020)",
+    y = "Admissions", x = "Date"
+  ) +
+  theme_minimal()
+
+# Optional: Plot other pathogens for visual comparison
+ggplot(did_data, aes(x = YearMonthDate, y = Admissions, color = spec_pathogen)) +
+  geom_line(alpha = 0.7) +
+  geom_vline(xintercept = as.numeric(vaccine_date), linetype = "dashed", color = "black") +
+  facet_wrap(~ spec_pathogen, scales = "free_y") +
+  labs(
+    title = "Monthly Admissions by Pathogen",
+    subtitle = "Dashed line = vaccine rollout (Jan 2020)",
+    y = "Admissions", x = "Date"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# ────────────────────────────────────────────────────────────────
+# 1. Keep only the 9 pathogens you want to compare
+target_pathogens <- c(
+  "Hand-Foot-Mouth Disease (HFMD)",
+  "Salmonella",
+  "Rotavirus",
+  "Amoeba",
+  "Cow milk allergic",
+  "E. coli",
+  "Typhoid & Paratyphoid",
+  "Ascariasis",
+  "Adenoviral enteritis"
+)
+
+# 2. Create DiD dummies
+#    -- Rotavirus vaccine rolled out Jan-2020 in Thailand
+policy_start <- as.Date("2020-01-01")
+
+did_data <- monthly_counts_final %>% 
+  filter(spec_pathogen %in% target_pathogens) %>% 
+  mutate(
+    post              = if_else(YearMonthDate >= policy_start, 1, 0),          # 1 = after 2020-01
+    rotavirus_target  = if_else(spec_pathogen == "Rotavirus", 1, 0),           # 1 = treated group
+    spec_pathogen     = droplevels(spec_pathogen)                              # drop unused levels
+  )
+```
+
+```{r}
+# quick check
+table(did_data$post, did_data$rotavirus_target)
+```
+
+
+```{r}
+# ────────────────────────────────────────────────────────────
+# 2-way fixed-effects Difference-in-Differences
+m_twfe <- feols(
+  Admissions ~ post * rotavirus_target | spec_pathogen + YearMonthDate,
+  cluster = ~spec_pathogen,
+  data    = did_data
+)
+
+
+# ────────────────────────────────────────────────────────────
+# 3) Time-FE only  ➜ recovers the main effect of `rotavirus_target`
+# Aux. models to recover main effects (descriptive only)
+m_post      <- feols(Admissions ~ post * rotavirus_target | spec_pathogen,
+                     cluster = ~spec_pathogen, data = did_data)   # shows `post`
+m_pathogen  <- feols(Admissions ~ post * rotavirus_target | YearMonthDate,
+                     cluster = ~YearMonthDate , data = did_data)  # shows `rotavirus_target`
+
+# ────────────────────────────────────────────────────────────
+# 4) Compare the three models side by side
+# Neat side-by-side table  (optional)
+etable(list("TWFE"        = m_twfe,
+            "Post shown"  = m_post,
+            "Group shown" = m_pathogen),
+       se.below = TRUE,
+       title = "DiD models of Rotavirus vaccine impact (children <5 y)")
+```
+
+```{r}
+# ────────────────────────────────────────────────────────────────
+# 5. Plot the fitted lines (optional)
+library(ggplot2)
+did_data <- did_data %>% 
+  mutate(
+    fitted_twfe = predict(m_twfe, newdata = .)
+  )
+
+ggplot(did_data,
+       aes(x = YearMonthDate, y = Admissions, colour = spec_pathogen)) +
+  geom_line(alpha = 0.25) +
+  geom_line(aes(y = fitted_twfe), size = 1) +
+  facet_wrap(~ spec_pathogen, scales = "free_y") +
+  geom_vline(xintercept = policy_start, linetype = "dashed") +
+  labs(title = "Observed vs. TWFE-fitted admissions",
+       subtitle = "Dashed line = start of Rotavirus vaccine (Jan-2020)",
+       x = "Month", y = "Admissions") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+monthly_rota_cases <- data_5 %>%
+  filter(spec_pathogen == "Rotavirus") %>%
+  mutate(month_date = as.Date(paste0(dx_gYearMonth, "-01"), format = "%Y-%b-%d")) %>%
+  group_by(month_date) %>%
+  summarise(actual_cases = n(), .groups = 'drop') %>%
+  arrange(month_date)
+
+# --- Step 2: Prepare the Data for ITS Modeling ---
+
+# Define the date when the vaccine intervention started
+intervention_date <- as.Date("2020-01-01")
+
+# Create a time-series dataframe
+its_data <- monthly_rota_cases %>%
+  # Create a continuous time variable (1, 2, 3, ...)
+  mutate(time = row_number()) %>%
+  # Create a variable to mark the pre- and post-intervention periods
+  mutate(period = if_else(month_date < intervention_date, "Pre-Vaccine", "Post-Vaccine"))
+
+# Split the data into pre- and post-intervention sets
+pre_intervention_data <- its_data %>% filter(period == "Pre-Vaccine")
+
+# --- Step 3: Build the Model on Pre-Intervention Data ---
+# We use a Negative Binomial model (glm.nb) as it's suitable for overdispersed count data.
+# The model learns the relationship between 'time' and 'actual_cases' ONLY before the vaccine.
+# We also include seasonality by adding month as a factor.
+pre_intervention_model <- glm.nb(actual_cases ~ time + factor(month(month_date)), 
+                                 data = pre_intervention_data)
+
+# --- Step 4: Predict the Counterfactual Trend ---
+# Use the model trained on pre-2020 data to predict what would have happened
+# across the ENTIRE timeline if the vaccine was never introduced.
+its_data$predicted_cases <- predict(pre_intervention_model, newdata = its_data, type = "response")
+
+
+# --- Step 5: Plot the Results ---
+ggplot(its_data, aes(x = month_date)) +
+  
+  # Line for the ACTUAL observed cases
+  geom_line(aes(y = actual_cases, color = "Actual Cases"), size = 1.2) +
+  
+  # Dashed line for the PREDICTED (counterfactual) cases
+  geom_line(aes(y = predicted_cases, color = "Predicted Trend (No Vaccine)"), size = 1.2, linetype = "dashed") +
+  
+  # Vertical line to clearly mark the vaccine introduction
+  geom_vline(xintercept = intervention_date, linetype = "dotted", color = "black", size = 1) +
+  
+  # Add a text label for the intervention
+  annotate("text", x = intervention_date, y = max(its_data$actual_cases), 
+           label = "Vaccine Program Start", hjust = -0.05, vjust = 1, angle = 90, size = 4) +
+  
+  # Formatting and labels
+  scale_color_manual(values = c("Actual Cases" = "dodgerblue", "Predicted Trend (No Vaccine)" = "firebrick")) +
+  scale_y_continuous(labels = comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(
+    title = "Interrupted Time Series: Actual vs. Predicted Rotavirus Cases",
+    subtitle = "Predicting the trend after 2020 based on pre-vaccine data (2014-2019)",
+    x = "Year",
+    y = "Number of Rotavirus Admissions (<5 years)",
+    color = "Legend"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+
+
+# Colinearlity
+
+```{r}
+sapply(data_5[, c("age_group", "sex_label", "hosLevel", "region", "maininscl_group", 
+                  "spec_pathogen", "DM", "HT", "CKD", "COPD", "Stroke", "COVID", 
+                  "Sepsis", "Dialysis", "Res_fail", "OSI", "repeated", "rota")],
+       function(x) length(unique(x)))  # or nlevels(x) if factor
+```
+
+```{r}
+vars_to_check <- c(
+  "sex_label", "hosLevel", "region", 
+  "maininscl_group", "spec_pathogen",
+  "DM", "HT", "CKD", "COPD", "Stroke", "COVID", "Sepsis", "Dialysis", "Res_fail", 
+  "OSI", "diarrhea_dead","HighCost", "los", "repeated", "rota"
+)
+
+model_check <- glm(HighCost ~ ., data = data_5 %>% select(all_of(vars_to_check)) %>% na.omit(), family = binomial())
+
+# Check multicollinearity (handles factors + aliasing)
+check_collinearity(model_check)
+```
+
+```{r}
+# Keep only predictors with >1 level
+vars <- c("sex_label", "hosLevel", "region", "spec_pathogen", 
+          "COVID", "Sepsis", "Dialysis", "Res_fail", 
+          "Cov_era", "repeated", "los")
+
+vars[sapply(data_5[, vars], function(x) length(unique(x)) > 1)]
+
+```
+
+#Logistric Regression
+
+```{r}
+# Check each binary predictor against the outcome in your data_5 subset
+table(data_5$HighCost, data_5$Sepsis)
+table(data_5$HighCost, data_5$Dialysis)
+table(data_5$HighCost, data_5$Res_fail)
+```
+
+
+```{r}
+# HighCost 1
+child_cost1 <- glm(
+  HighCost ~ sex_label + hosLevel + region + COVID + Sepsis + Res_fail + OSI + repeated + los,
+  data = data_5,
+  family = binomial
+)
+
+logistic.display(child_cost1)
+```
+
+```{r}
+child_cost2 <- glm(
+  HighCost ~ sex_label + hosLevel + region + maininscl_group + spec_pathogen + COVID + Sepsis + Res_fail + OSI + repeated + los,
+  data = data_5,
+  family = binomial
+)
+
+logistic.display(child_cost2)
+```
+
+```{r}
+child_cost3 <- glm(
+  HighCost ~ sex_label + hosLevel + region + maininscl_group + spec_pathogen + COVID + Sepsis + Dialysis + Res_fail + OSI + repeated + los,
+  data = data_5,
+  family = binomial
+)
+
+logistic.display(child_cost3)
+```
+
+```{r}
+child_dead <- glm(
+  diarrhea_dead ~ sex_label + hosLevel + region + maininscl_group + spec_pathogen + COVID + Sepsis + Dialysis + Res_fail + OSI + repeated + los,
+  data = data_5,
+  family = binomial
+)
+
+logistic.display(child_dead)
+```
+
+# Rota model
+
+```{r}
+child_rota <- glm(
+  rota ~ sex_label + hosLevel + region + maininscl_group + spec_pathogen + COVID + Sepsis + Res_fail + OSI + repeated + los,
+  data = data_5,
+  family = binomial
+)
+
+logistic.display(child_rota)
+```
+
+```{r}
+coverage_model <- glm.nb(rota ~ sex_label + hosLevel + region + maininscl_group + spec_pathogen + COVID + Sepsis + Res_fail + OSI + repeated + los, data = data_5)
+
+# Calculate IRR and 95% CI from the glm.nb model
+exp_coef <- exp(coef(coverage_model))  # IRR
+exp_ci <- exp(confint(coverage_model)) # 95% CI
+
+# Combine into a tidy table
+irr_table <- data.frame(
+  Variable = names(exp_coef),
+  IRR = round(exp_coef, 3),
+  CI_Lower = round(exp_ci[, 1], 3),
+  CI_Upper = round(exp_ci[, 2], 3)
+)
+
+# Print the IRR table
+print(irr_table)
+```
+
+
